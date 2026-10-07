@@ -4,6 +4,7 @@ import {
   Text,
   ScrollView,
   Pressable,
+  Image,
   useColorScheme,
   useWindowDimensions,
   AppState as NativeAppState,
@@ -209,15 +210,12 @@ export default function App() {
                       gap: 11,
                     }}
                   >
-                    <View
-                      style={{
-                        backgroundColor: c.soft,
-                        borderRadius: 13,
-                        padding: 10,
-                      }}
-                    >
-                      <Icon name="sunrise" size={24} colour={c.accent} />
-                    </View>
+                    <Image
+                      source={require("./assets/wakey-wakey-icon.png")}
+                      style={{ width: 44, height: 44 }}
+                      resizeMode="contain"
+                      accessibilityLabel="Wakey-Wakey app icon"
+                    />
                     <Text
                       style={{
                         fontSize: 22,

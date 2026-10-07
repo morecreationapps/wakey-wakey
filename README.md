@@ -21,6 +21,8 @@ Open <http://localhost:8081>. `./run-local.sh phone` starts an Expo Go preview; 
 
 The install/bootstrap script creates an empty local-seed module when absent. Public builds contain no personal rota. Choose the generic early/late templates or start from scratch, then enter and confirm your own work timezone, travel, preparation and sleep preferences. Missing inputs remain visibly provisional.
 
+The same script restores the supplied app icon from `assets/wakey-wakey-icon.png.base64`, verifies its SHA-256 and writes the PNG used by Expo. The generated PNG is ignored; the source encoding preserves the original image and transparency exactly.
+
 ## What it does
 
 - **Today:** next actual duty, preparation checklist, explainable departure/arrival and sleep events, and shift-transition review.

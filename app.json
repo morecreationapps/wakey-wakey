@@ -3,6 +3,7 @@
     "name": "Wakey-Wakey!",
     "slug": "wakey-wakey",
     "version": "0.1.0",
+    "icon": "./assets/wakey-wakey-icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "scheme": "wakey-wakey",
@@ -15,7 +16,8 @@
     },
     "web": {
       "bundler": "metro",
-      "name": "Wakey-Wakey!"
+      "name": "Wakey-Wakey!",
+      "favicon": "./assets/wakey-wakey-icon.png"
     },
     "plugins": ["expo-sqlite", "expo-notifications", "expo-sharing"],
     "extra": {
