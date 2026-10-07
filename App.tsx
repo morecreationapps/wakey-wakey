@@ -198,6 +198,7 @@ export default function App() {
                     flexDirection: "row",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    gap: 12,
                     borderBottomWidth: 1,
                     borderColor: c.line,
                     backgroundColor: c.card,
@@ -208,26 +209,24 @@ export default function App() {
                       flexDirection: "row",
                       alignItems: "center",
                       gap: 11,
+                      flexShrink: 1,
+                      minWidth: 0,
                     }}
                   >
                     <Image
                       source={require("./assets/wakey-wakey-icon.png")}
-                      style={{ width: 44, height: 44 }}
+                      style={{ width: 44, height: 44, flexShrink: 0 }}
                       resizeMode="contain"
-                      accessibilityLabel="Wakey-Wakey app icon"
+                      accessible={false}
                     />
-                    <Text
-                      style={{
-                        fontSize: 22,
-                        fontWeight: "600",
-                        letterSpacing: -0.7,
-                        color: c.ink,
-                      }}
-                    >
-                      Wakey-Wakey!
-                    </Text>
+                    <Image
+                      source={require("./assets/wakey-wakey-wordmark.png")}
+                      style={{ width: 168, height: 40, flexShrink: 1, minWidth: 0 }}
+                      resizeMode="contain"
+                      accessibilityLabel="Wakey-Wakey!"
+                    />
                   </View>
-                  <View style={{ alignItems: "flex-end", gap: 5 }}>
+                  <View style={{ alignItems: "flex-end", gap: 5, flexShrink: 0 }}>
                     <Text
                       style={{
                         fontSize: 10,
