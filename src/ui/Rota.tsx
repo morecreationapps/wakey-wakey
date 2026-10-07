@@ -245,7 +245,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
   return (
     <View style={ui.stack}>
       <Row style={{ justifyContent: "space-between" }}>
-        <View>
+        <View style={{ gap: 8 }}>
           <Heading>Your rota</Heading>
           <Body muted>Work, rest and everything in between.</Body>
         </View>

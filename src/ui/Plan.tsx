@@ -107,7 +107,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
   return (
     <View style={ui.stack}>
       <Row style={{ justifyContent: "space-between" }}>
-        <View>
+        <View style={{ gap: 8 }}>
           <Heading>A practical plan.</Heading>
           <Body muted>
             Prepare for work. Protect sleep. Leave room for yourself.

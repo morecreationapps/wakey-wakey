@@ -1,6 +1,26 @@
 # Brand theme verification
 
-## Current revision: orange outlines on white rounded surfaces
+## Current revision: spaced headers and separate rounded timeline boxes
+
+Today, Rota and Plan now have an 8-pixel gap between their stacked white header
+surfaces. Each timeline event has a rounded orange time/date box and a separate
+rounded orange event-label/icon box, with 12-pixel corners and a 10-pixel gap.
+White labels/icons and `#FA5501` fills are unchanged. Longer labels may wrap;
+text is not truncated. The original single-button explanation handler remains,
+with an orange exterior focus outline on the surrounding white card.
+
+Local TypeScript and diff checks passed. The running local app was visually
+inspected on all three affected pages. Rendered header gaps measured 8 pixels;
+timeline boxes measured 12-pixel corner radii and retained their original
+explanation content when expanded. No storage, planning, rota, task or navigation
+handler changed. GitHub's clean build/deployment and any subsequent responsive
+checks are reported with the delivery response.
+
+Changed files: `src/ui/TodaySleep.tsx`, `src/ui/Rota.tsx`, `src/ui/Plan.tsx` and
+this record. This spacing/shape change leaves the previously measured palette
+contrast limitations unchanged; no accessibility conformance claim is made.
+
+## Previous revision: orange outlines on white rounded surfaces
 
 Added the existing card's 1-pixel `#FA5501` border to standalone text surfaces,
 short-label pills, notices, expanded timeline explanations and unchecked task

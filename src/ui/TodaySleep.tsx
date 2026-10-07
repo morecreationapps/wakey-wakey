@@ -122,8 +122,8 @@ export function PlanTimeline({
           {x}
         </Notice>
       ))}
-      {p.events.map((e, i) => (
-        <View key={e.kind}>
+      {p.events.map((e) => (
+        <View key={e.kind} style={{ gap: 8 }}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Why this time? ${e.label}`}
@@ -132,18 +132,27 @@ export function PlanTimeline({
             onPress={() => setExpanded(expanded === e.kind ? null : e.kind)}
             style={({ pressed }) => ({
               flexDirection: "row",
-              gap: 14,
-              paddingVertical: 9,
-              alignItems: "center",
-              backgroundColor: c.accent,
-              outlineColor: c.onAccent,
+              gap: 10,
+              alignItems: "stretch",
+              borderRadius: 12,
+              outlineColor: c.accent,
               outlineWidth: focusedEvent === e.kind || pressed ? 2 : 0,
               outlineStyle: "solid",
-              outlineOffset: -3,
+              outlineOffset: 2,
               transform: [{ translateY: pressed ? 1 : 0 }],
             })}
           >
-            <View style={{ width: 78 }}>
+            <View
+              style={{
+                width: 98,
+                flexShrink: 0,
+                justifyContent: "center",
+                paddingHorizontal: 10,
+                paddingVertical: 9,
+                backgroundColor: c.accent,
+                borderRadius: 12,
+              }}
+            >
               <Text
                 style={{
                   color: c.onAccent,
@@ -160,49 +169,55 @@ export function PlanTimeline({
             </View>
             <View
               style={{
-                height: 40,
-                width: 3,
-                borderRadius: 3,
-                backgroundColor: c.onAccent,
+                flex: 1,
+                minWidth: 0,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 9,
+                backgroundColor: c.accent,
+                borderRadius: 12,
               }}
-            />
-            <View style={{ flex: 1 }}>
-              <Body
-                style={{
-                  fontWeight: "600",
-                  color: c.onAccent,
-                  backgroundColor: c.accent,
-                  textDecorationLine:
-                    expanded === e.kind ? "underline" : "none",
-                }}
-              >
-                {e.label}
-              </Body>
-              <Body
-                style={{
-                  fontSize: 11,
-                  color: c.onAccent,
-                  backgroundColor: c.accent,
-                }}
-              >
-                Why this time? {expanded === e.kind ? "−" : "+"}
-              </Body>
+            >
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Body
+                  style={{
+                    fontWeight: "600",
+                    color: c.onAccent,
+                    backgroundColor: c.accent,
+                    textDecorationLine:
+                      expanded === e.kind ? "underline" : "none",
+                  }}
+                >
+                  {e.label}
+                </Body>
+                <Body
+                  style={{
+                    fontSize: 11,
+                    color: c.onAccent,
+                    backgroundColor: c.accent,
+                  }}
+                >
+                  Why this time? {expanded === e.kind ? "−" : "+"}
+                </Body>
+              </View>
+              <Icon
+                name={
+                  e.kind === "departure"
+                    ? "navigation"
+                    : e.kind === "wake"
+                      ? "sun"
+                      : e.kind === "workStart"
+                        ? "briefcase"
+                        : e.kind === "bedtime" || e.kind === "sleepStart"
+                          ? "moon"
+                          : "clock"
+                }
+                size={18}
+                colour={c.onAccent}
+              />
             </View>
-            <Icon
-              name={
-                e.kind === "departure"
-                  ? "navigation"
-                  : e.kind === "wake"
-                    ? "sun"
-                    : e.kind === "workStart"
-                      ? "briefcase"
-                      : e.kind === "bedtime" || e.kind === "sleepStart"
-                        ? "moon"
-                        : "clock"
-              }
-              size={18}
-              colour={c.onAccent}
-            />
           </Pressable>
           {expanded === e.kind && (
             <View
@@ -218,11 +233,6 @@ export function PlanTimeline({
                 {e.why}
               </Body>
             </View>
-          )}
-          {i < p.events.length - 1 && (
-            <View
-              style={{ height: 1, backgroundColor: c.line, marginLeft: 95 }}
-            />
           )}
         </View>
       ))}
@@ -330,7 +340,7 @@ export function Today({
   return (
     <View style={ui.stack}>
       <Row style={{ justifyContent: "space-between" }}>
-        <View>
+        <View style={{ gap: 8 }}>
           <Label>
             {new Intl.DateTimeFormat("en-GB", {
               weekday: "long",
