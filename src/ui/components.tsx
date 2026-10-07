@@ -34,8 +34,10 @@ function RoundedTextSurface({
       style={{
         backgroundColor: c.card,
         borderRadius: pill ? 9 : 22,
-        paddingHorizontal: pill ? 9 : 12,
-        paddingVertical: pill ? 5 : 8,
+        borderWidth: 1,
+        borderColor: c.line,
+        paddingHorizontal: pill ? 8 : 11,
+        paddingVertical: pill ? 4 : 7,
       }}
     >
       {children}
@@ -263,8 +265,10 @@ export function Pill({
       style={{
         backgroundColor: c[tone],
         borderRadius: 9,
-        paddingHorizontal: 9,
-        paddingVertical: 5,
+        borderWidth: 1,
+        borderColor: c.line,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
         alignSelf: "flex-start",
       }}
     >
@@ -490,8 +494,10 @@ export function Notice({
     <View
       style={{
         backgroundColor: error ? c.redBg : c.warnBg,
-        padding: 15,
+        padding: 14,
         borderRadius: 14,
+        borderWidth: 1,
+        borderColor: c.line,
         gap: 6,
       }}
     >

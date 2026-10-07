@@ -1,6 +1,26 @@
 # Brand theme verification
 
-## Current revision: original orange and rounded text surfaces
+## Current revision: orange outlines on white rounded surfaces
+
+Added the existing card's 1-pixel `#FA5501` border to standalone text surfaces,
+short-label pills, notices, expanded timeline explanations and unchecked task
+controls. Existing white cards, fields, inactive switches, progress segments and
+toast panels already have the same orange border. Padding decreases by 1 pixel
+per side where a new border was added, preserving outer dimensions. No navigation,
+data, storage or action handler changed; supplied artwork is unchanged.
+
+TypeScript and a read-only diff/container audit passed locally. Initial local
+exports encountered transient source/dependency read failures. The wordmark was
+verified byte-for-byte against its tracked encoding and the user's original PNG.
+GitHub's clean build, tests, export and deployment are checked after publication;
+rendered verification results are recorded in the delivery response.
+
+The previously measured orange/white and orange/yellow contrast limitations
+remain unchanged; this border-only revision makes no new accessibility claim.
+
+Changed files: `src/ui/components.tsx`, `src/ui/TodaySleep.tsx` and this record.
+
+## Previous revision: original orange and rounded text surfaces
 
 The user's subsequent instruction restores `#FA5501` for all previously darker
 orange interface text and buttons. Shared interface accents use the same original

@@ -206,7 +206,13 @@ export function PlanTimeline({
           </Pressable>
           {expanded === e.kind && (
             <View
-              style={{ padding: 12, backgroundColor: c.card, borderRadius: 12 }}
+              style={{
+                padding: 11,
+                backgroundColor: c.card,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: c.line,
+              }}
             >
               <Body muted style={{ fontSize: 12 }}>
                 {e.why}
@@ -486,10 +492,12 @@ export function Today({
                           );
                         }}
                         style={({ pressed }) => ({
-                          padding: 10,
+                          padding: t.state === "completed" ? 10 : 9,
                           backgroundColor:
                             t.state === "completed" ? c.accent : c.card,
                           borderRadius: 10,
+                          borderWidth: t.state === "completed" ? 0 : 1,
+                          borderColor: c.line,
                           outlineColor:
                             t.state === "completed" ? c.onAccent : c.accent,
                           outlineWidth: focusedTask === t.id || pressed ? 2 : 0,
