@@ -45,6 +45,8 @@ The public deployment workflow exports static web assets for GitHub Pages. The n
 
 Pushes to `main` run the Pages workflow on Node 24 and pinned pnpm 11.19.0. Typechecking, tests and a guarded public export must pass before deployment. The Pages export uses `/wakey-wakey/`, rejects private seed data and uploads only `dist`. Local development and native builds retain their normal root paths.
 
+The Pages export places bundled fonts in a flat, visible asset directory because GitHub's archive excludes hidden dependency folders. It verifies referenced assets and gives rewritten JavaScript bundles new filenames for browser cache updates.
+
 ## Data and limitations
 
 Rota, task and diary records stay in local storage. The browser uses localStorage; native apps use ordinary SQLite. Neither is encrypted by this implementation. There are no analytics, account, AI, upload or push-token calls in the app. Exports and JSON backups contain user data and should be kept privately.

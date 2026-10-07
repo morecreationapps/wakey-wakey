@@ -20,14 +20,16 @@ The original implementation was checked on 7 October 2026:
 
 After replacing personal example dates/codes with synthetic fixtures and guarding the local-profile copy when the seed is empty, this checkout was checked on 7 October 2026:
 
-| Command          | Result                                   |
-| ---------------- | ---------------------------------------- |
-| `pnpm typecheck` | Passed without diagnostics               |
-| `pnpm test`      | 3 test files passed; **92 tests passed** |
-| `pnpm export:pages` | Fresh web export passed; empty seed and project asset paths verified |
-| Static web preview | Generic onboarding opened at `/wakey-wakey/`; icons rendered, onboarding restored through reload, and no captured browser warnings/errors |
+| Command             | Result                                                                                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm typecheck`    | Passed without diagnostics                                                                                                                |
+| `pnpm test`         | 3 test files passed; **92 tests passed**                                                                                                  |
+| `pnpm export:pages` | Fresh web export passed; empty seed and project asset paths verified                                                                      |
+| Static web preview  | Generic onboarding opened at `/wakey-wakey/`; icons rendered, onboarding restored through reload, and no captured browser warnings/errors |
 
 The original implementation’s native export and simulator evidence above remains baseline evidence; a clean public web export and hosted verification are recorded separately during deployment. The deployment workflow checks the public checkout before publishing its web assets; inspect that run for the current commit’s result. A passing workflow does not establish native runtime or clinical verification.
+
+The public export flattens bundled asset paths for the Pages archive, validates referenced asset and JavaScript files, rejects missing or hidden assets and conflicting filenames, and changes the filenames of rewritten bundles to refresh browser caches. Font delivery must also be checked on the live HTTPS site after deployment.
 
 ## Regression coverage
 
