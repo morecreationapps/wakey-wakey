@@ -470,7 +470,9 @@ export function Setup({ state, change, notify }: ScreenProps) {
     >
       <Row style={{ justifyContent: "space-between" }}>
         <Pill text={`SETUP · ${step + 1} OF 6`} />
-        <Body muted>Your answers save as you go</Body>
+        <Body muted pill>
+          Your answers save as you go
+        </Body>
       </Row>
       <Row style={{ backgroundColor: c.card }}>
         {steps.map((x, i) => (

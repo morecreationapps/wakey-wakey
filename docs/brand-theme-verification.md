@@ -1,5 +1,36 @@
 # Brand theme verification
 
+## Current revision: original orange and rounded text surfaces
+
+The user's subsequent instruction restores `#FA5501` for all previously darker
+orange interface text and buttons. Shared interface accents use the same original
+orange. White control labels, brand-yellow backgrounds and the logo files remain
+unchanged. This supersedes the darker-orange approval recorded below.
+
+Standalone headings and descriptions now have rounded white surfaces with the
+existing card's 22-pixel corner radius. Short labels and the setup save hint use
+the existing pill's 9-pixel radius. Small insets keep text clear of the curved
+corners. Typography already inside white cards and notices retains its existing
+spacing; the underlying screen structure and all data/navigation handlers remain
+unchanged.
+
+For this revision, TypeScript, all 92 tests and the public GitHub Pages export
+passed. Onboarding was traversed in a separate local preview, with desktop and
+390 x 844 visual inspection of its opening screen. All five main screens were
+visually inspected with synthetic data, and rendered styles contained only
+`#FECC07`, `#FA5501` and white. Reload retained the synthetic profile and rota.
+No production saved data was replaced. Native interfaces were not visually tested.
+
+The restored orange measures 3.299481:1 against white, below 4.5:1 for ordinary
+text, and 2.176775:1 against yellow, below 3:1 for adjacent control contrast where
+required. These known limitations are retained under the user's explicit request;
+no accessibility pass is claimed for the original orange combinations.
+
+Changed files for this revision: `src/ui/theme.ts`, `src/ui/components.tsx`,
+`src/ui/Setup.tsx`, `App.tsx` and this verification record.
+
+## Previous verification record
+
 ## Scope and approved palette
 
 This change updates visual styling only. Shared theme variables retain the supplied

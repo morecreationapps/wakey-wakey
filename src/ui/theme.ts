@@ -1,12 +1,12 @@
-// Preserve the exact supplied logo colours. The user approved the darker UI
-// orange after reviewing the original orange's 3.2995:1 contrast against white.
+// Preserve the exact supplied logo colours. The user requested the original
+// orange for interface text and controls after reviewing its contrast limits.
 export const brand = {
   yellow: "#FECC07",
   orange: "#FA5501",
   white: "#FFFFFF",
 } as const;
 
-export const interfaceOrange = "#D14601";
+export const interfaceOrange = brand.orange;
 
 // Preserve the existing semantic keys so saved display preferences and screen
 // behaviour do not change. Both display modes use the requested brand palette.

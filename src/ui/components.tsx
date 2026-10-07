@@ -17,6 +17,31 @@ export const light = palette;
 export const dark = palette;
 export const Theme = createContext<Palette>(light);
 export const useTheme = () => useContext(Theme);
+export const WhiteSurface = createContext(false);
+
+function RoundedTextSurface({
+  children,
+  pill = false,
+}: {
+  children: React.ReactNode;
+  pill?: boolean;
+}) {
+  const c = useTheme();
+  const insideWhiteSurface = useContext(WhiteSurface);
+  if (insideWhiteSurface) return <>{children}</>;
+  return (
+    <View
+      style={{
+        backgroundColor: c.card,
+        borderRadius: pill ? 9 : 22,
+        paddingHorizontal: pill ? 9 : 12,
+        paddingVertical: pill ? 5 : 8,
+      }}
+    >
+      {children}
+    </View>
+  );
+}
 export type Change = (fn: (state: AppState) => AppState) => void;
 export interface ScreenProps {
   state: AppState;
@@ -44,47 +69,51 @@ export function Label({
 }) {
   const c = useTheme();
   return (
-    <Text
-      style={[
-        {
-          color: c.muted,
-          backgroundColor: c.card,
-          fontSize: 11,
-          fontWeight: "700",
-          letterSpacing: 1.5,
-          textTransform: "uppercase",
-        },
-        style,
-      ]}
-    >
-      {children}
-    </Text>
+    <RoundedTextSurface pill>
+      <Text
+        style={[
+          {
+            color: c.muted,
+            fontSize: 11,
+            fontWeight: "700",
+            letterSpacing: 1.5,
+            textTransform: "uppercase",
+          },
+          style,
+        ]}
+      >
+        {children}
+      </Text>
+    </RoundedTextSurface>
   );
 }
 export function Body({
   children,
   muted = false,
   style,
+  pill = false,
 }: {
   children: React.ReactNode;
   muted?: boolean;
   style?: object;
+  pill?: boolean;
 }) {
   const c = useTheme();
   return (
-    <Text
-      style={[
-        {
-          color: muted ? c.muted : c.ink,
-          backgroundColor: c.card,
-          fontSize: 14,
-          lineHeight: 22,
-        },
-        style,
-      ]}
-    >
-      {children}
-    </Text>
+    <RoundedTextSurface pill={pill}>
+      <Text
+        style={[
+          {
+            color: muted ? c.muted : c.ink,
+            fontSize: 14,
+            lineHeight: 22,
+          },
+          style,
+        ]}
+      >
+        {children}
+      </Text>
+    </RoundedTextSurface>
   );
 }
 export function Heading({
@@ -96,18 +125,19 @@ export function Heading({
 }) {
   const c = useTheme();
   return (
-    <Text
-      style={{
-        color: c.ink,
-        backgroundColor: c.card,
-        fontSize: small ? 20 : 32,
-        fontWeight: "600",
-        letterSpacing: small ? -0.4 : -1,
-        lineHeight: small ? 28 : 40,
-      }}
-    >
-      {children}
-    </Text>
+    <RoundedTextSurface>
+      <Text
+        style={{
+          color: c.ink,
+          fontSize: small ? 20 : 32,
+          fontWeight: "600",
+          letterSpacing: small ? -0.4 : -1,
+          lineHeight: small ? 28 : 40,
+        }}
+      >
+        {children}
+      </Text>
+    </RoundedTextSurface>
   );
 }
 export function Card({
@@ -133,7 +163,7 @@ export function Card({
         { backgroundColor: c.card },
       ]}
     >
-      {children}
+      <WhiteSurface.Provider value={true}>{children}</WhiteSurface.Provider>
     </View>
   );
 }
@@ -465,9 +495,11 @@ export function Notice({
         gap: 6,
       }}
     >
-      <Body style={{ color: error ? c.red : c.warn, fontSize: 13 }}>
-        <Icon name={error ? "alert-circle" : "info"} size={13} /> {children}
-      </Body>
+      <WhiteSurface.Provider value={true}>
+        <Body style={{ color: error ? c.red : c.warn, fontSize: 13 }}>
+          <Icon name={error ? "alert-circle" : "info"} size={13} /> {children}
+        </Body>
+      </WhiteSurface.Provider>
     </View>
   );
 }

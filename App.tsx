@@ -23,6 +23,7 @@ import {
   Button,
   Body,
   Notice,
+  WhiteSurface,
 } from "./src/ui/components";
 import { Setup } from "./src/ui/Setup";
 import { Today, Sleep } from "./src/ui/TodaySleep";
@@ -190,7 +191,9 @@ export default function App() {
                 <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
                   Wakey-Wakey!
                 </Text>
-                <Body>{loadError || "Opening your local planner…"}</Body>
+                <WhiteSurface.Provider value={true}>
+                  <Body>{loadError || "Opening your local planner…"}</Body>
+                </WhiteSurface.Provider>
                 {!!loadError && (
                   <Button title="Retry reading saved data" onPress={load} />
                 )}
