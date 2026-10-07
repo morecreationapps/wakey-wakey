@@ -17,6 +17,7 @@ export async function requestReminders(): Promise<NotificationStatus> {
 export async function syncReminders(
   _state: AppState,
   _clock?: Clock,
+  _expectedOwner?: string,
 ): Promise<NotificationStatus> {
   return status();
 }

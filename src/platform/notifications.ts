@@ -1,5 +1,9 @@
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
+import {
+  notificationScope,
+  notificationScopeCurrent,
+} from "./notificationScope";
 import { AppState, Clock, systemClock } from "../model";
 import {
   ALARM_LIMITATION,
@@ -122,15 +126,27 @@ export function requestReminders(): Promise<NotificationStatus> {
 export function syncReminders(
   state: AppState,
   clock: Clock = systemClock,
+  expectedOwner?: string,
 ): Promise<NotificationStatus> {
   // Snapshot the revision submitted by the caller before waiting behind another reconciliation.
   const captured = JSON.parse(JSON.stringify(state)) as AppState;
+  const scope = notificationScope();
   return serial(async () => {
     if (!nativeSupported()) return unsupported();
+    if (
+      !notificationScopeCurrent(scope) ||
+      (expectedOwner !== undefined && scope.owner !== expectedOwner)
+    )
+      return status();
     await setup();
     const permission = permissionDescription(
       await Notifications.getPermissionsAsync(),
     );
+    if (
+      !notificationScopeCurrent(scope) ||
+      (expectedOwner !== undefined && scope.owner !== expectedOwner)
+    )
+      return status();
     await reconcileReminders(
       adapter,
       permission.allowed ? desiredReminders(captured, clock) : [],
@@ -139,14 +155,19 @@ export function syncReminders(
   });
 }
 export function testNotification(): Promise<NotificationStatus> {
+  const scope = notificationScope();
   return serial(async () => {
     if (!nativeSupported()) return unsupported();
+    if (!notificationScopeCurrent(scope)) return status();
     const permission = permissionDescription(
       await Notifications.getPermissionsAsync(),
     );
-    if (!permission.allowed) return status();
+    if (!permission.allowed || !notificationScopeCurrent(scope))
+      return status();
     await setup();
+    if (!notificationScopeCurrent(scope)) return status();
     await Notifications.cancelScheduledNotificationAsync(TEST_ID);
+    if (!notificationScopeCurrent(scope)) return status();
     await Notifications.scheduleNotificationAsync({
       identifier: TEST_ID,
       content: {
@@ -161,6 +182,12 @@ export function testNotification(): Promise<NotificationStatus> {
         channelId: CHANNEL,
       },
     });
+    // The OS scheduling promise can finish after logout. Cancel this stale
+    // request before the next account's queued notification operation begins.
+    if (!notificationScopeCurrent(scope)) {
+      await Notifications.cancelScheduledNotificationAsync(TEST_ID);
+      return status();
+    }
     return {
       ...(await status()),
       message: `Test requested for five seconds from now. ${permission.detail} ${ALARM_LIMITATION}`,

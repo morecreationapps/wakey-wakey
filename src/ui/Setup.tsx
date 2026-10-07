@@ -16,13 +16,7 @@ import {
   ui,
   Pill,
 } from "./components";
-import {
-  initialState,
-  starterTemplates,
-  suppliedProfile,
-} from "../data/defaults";
-import { localRotaText } from "../data/localSeed";
-import { previewImport, importAccepted } from "../data/import";
+import { initialState, starterTemplates } from "../data/defaults";
 import { nextWork, planShift } from "../engine/planner";
 import { displayTime } from "../engine/time";
 import { systemClock } from "../model";
@@ -401,20 +395,13 @@ export function Setup({ state, change, notify }: ScreenProps) {
   const c = useTheme(),
     step = state.settings.onboardingStep,
     s = state.settings;
-  const pendingPreview = s.onboardingRotaPending
-    ? previewImport(localRotaText, s.timezone, state.entries, "UK")
-    : null;
-  const previewEntries = pendingPreview
-    ? importAccepted(pendingPreview, state.entries)
-    : state.entries;
+  const previewEntries = state.entries;
   const next = nextWork(previewEntries, systemClock, s.timezone);
   const p = next ? planShift(next, s, previewEntries, state.tasks) : null;
   const choose = (kind: string) =>
     change((a) => {
       const nextSettings = {
-        ...(kind === "personal"
-          ? suppliedProfile(initialState().settings)
-          : initialState().settings),
+        ...initialState().settings,
         onboardingStep: 1,
       };
       return {
@@ -423,7 +410,7 @@ export function Setup({ state, change, notify }: ScreenProps) {
           kind === "scratch" ? [] : starterTemplates.map((x) => ({ ...x })),
         settings: {
           ...nextSettings,
-          onboardingRotaPending: kind === "personal",
+          onboardingRotaPending: false,
         },
         entries: [],
       };
@@ -501,19 +488,6 @@ export function Setup({ state, change, notify }: ScreenProps) {
         {step === 0 ? (
           <View style={ui.stack}>
             <Heading small>Choose your starting point</Heading>
-            {!!localRotaText.trim() && (
-              <Button
-                title="Use my local rota profile"
-                icon="calendar"
-                onPress={() => choose("personal")}
-              />
-            )}
-            {!!localRotaText.trim() && (
-              <Body muted>
-                Imports your local rota profile. Review and edit every entry and
-                routine before relying on it.
-              </Body>
-            )}
             <Button
               title="Early / late shift starter"
               secondary
@@ -529,8 +503,8 @@ export function Setup({ state, change, notify }: ScreenProps) {
               onPress={() => choose("scratch")}
             />
             <Body muted>
-              Your plans save on this device. No account or subscription
-              required.
+              Your answers save to your account as you go and stay editable in
+              Settings.
             </Body>
           </View>
         ) : step < 5 ? (
@@ -543,33 +517,9 @@ export function Setup({ state, change, notify }: ScreenProps) {
               {s.timezone} · {s.clockFormat}-hour clock
             </Body>
             <Body>
-              {previewEntries.length} rota entries{" "}
-              {pendingPreview ? "to confirm" : "recorded"} ·{" "}
+              {previewEntries.length} rota entries recorded ·{" "}
               {state.templates.length} shift templates
             </Body>
-            {pendingPreview && (
-              <>
-                <Heading small>Supplied rota import preview</Heading>
-                <Body muted>
-                  Confirm these entries before saving them. Duplicate or
-                  conflicting rows are skipped.
-                </Body>
-                {pendingPreview.rows.map((r) => (
-                  <View key={r.line}>
-                    <Body>
-                      {r.entry
-                        ? `${r.entry.date} · ${r.entry.duty || r.entry.status} ${r.entry.start?.split("T")[1] ?? ""} ${r.entry.end?.split("T")[1] ?? ""}`
-                        : `Row ${r.line}`}
-                    </Body>
-                    {r.errors.map((e) => (
-                      <Notice error key={e}>
-                        {e}
-                      </Notice>
-                    ))}
-                  </View>
-                ))}
-              </>
-            )}
             <Body>
               Outbound: {s.outboundMin ?? "?"}–{s.outboundMax ?? "?"} min ·
               Return: {s.returnMinutes ?? "Still needed"} min
@@ -610,11 +560,7 @@ export function Setup({ state, change, notify }: ScreenProps) {
               these answers stay editable in Settings.
             </Body>
             <Button
-              title={
-                pendingPreview
-                  ? "Confirm rota, save setup & open Today"
-                  : "Save setup & open Today"
-              }
+              title="Save setup & open Today"
               icon="check"
               onPress={() => {
                 if (!s.timezoneConfirmed) {
@@ -623,9 +569,6 @@ export function Setup({ state, change, notify }: ScreenProps) {
                 }
                 change((a) => ({
                   ...a,
-                  entries: pendingPreview
-                    ? importAccepted(pendingPreview, a.entries)
-                    : a.entries,
                   settings: {
                     ...a.settings,
                     onboardingComplete: true,

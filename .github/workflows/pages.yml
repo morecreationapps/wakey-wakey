@@ -16,6 +16,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      EXPO_PUBLIC_SUPABASE_URL: "https://zhdoydzgtuskiflnzzxh.supabase.co"
+      EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_DeRy2POeNcZuKYENLx_x1Q_DQkNHRpk"
+      EXPO_PUBLIC_AUTH_EMAIL_CONFIGURED: "true"
     permissions:
       contents: read
       pages: read

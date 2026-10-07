@@ -19,7 +19,12 @@
       "name": "Wakey-Wakey!",
       "favicon": "./assets/wakey-wakey-icon.png"
     },
-    "plugins": ["expo-sqlite", "expo-notifications", "expo-sharing"],
+    "plugins": [
+      "expo-sqlite",
+      "expo-notifications",
+      "expo-sharing",
+      "expo-secure-store"
+    ],
     "extra": {
       "publicReleaseReviewed": false
     }

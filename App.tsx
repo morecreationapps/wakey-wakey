@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -13,8 +13,21 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { AppState, systemClock } from "./src/model";
 import { initialState } from "./src/data/defaults";
-import { loadState, saveState } from "./src/platform/store";
-import { syncReminders } from "./src/platform/notifications";
+import {
+  createAccountStore,
+  handleAccountAccessDenied,
+  type AccountStore,
+} from "./src/auth/accountStore";
+import { authProvider, accountRemote, hashSnapshot } from "./src/auth/service";
+import { useAuthentication, type AccountIdentity } from "./src/auth/controller";
+import { accountCache } from "./src/platform/accountCache";
+import { readLegacySnapshot } from "./src/platform/legacySnapshot";
+import {
+  activateNotificationOwner,
+  clearNotificationOwner,
+} from "./src/platform/notificationScope";
+import { AuthScreens } from "./src/ui/AuthScreens";
+import { syncReminders, disableReminders } from "./src/platform/notifications";
 import {
   Theme,
   light,
@@ -66,11 +79,69 @@ class ErrorBoundary extends React.Component<
   }
 }
 export default function App() {
+  const { identity, controller } = useAuthentication(authProvider);
+  const store = useMemo(
+    () =>
+      identity
+        ? createAccountStore({
+            userId: identity.id,
+            remote: accountRemote(identity.id),
+            cache: accountCache,
+            readLegacy: readLegacySnapshot,
+            hash: hashSnapshot,
+          })
+        : null,
+    [identity?.id],
+  );
+  useEffect(() => {
+    if (!identity) return;
+    activateNotificationOwner(identity.id);
+    return () => {
+      clearNotificationOwner(identity.id);
+      void disableReminders().catch(() => undefined);
+    };
+  }, [identity?.id]);
+  const logout = async () => {
+    clearNotificationOwner();
+    const cancelling = disableReminders();
+    await controller.logout();
+    await cancelling.catch(() => undefined);
+  };
+  return (
+    <SafeAreaProvider>
+      <Theme.Provider value={light}>
+        <StatusBar style="dark" />
+        <SafeAreaView style={{ flex: 1, backgroundColor: light.bg }}>
+          {identity && store ? (
+            <Planner
+              key={identity.id}
+              identity={identity}
+              store={store}
+              logout={logout}
+            />
+          ) : (
+            <AuthScreens controller={controller} />
+          )}
+        </SafeAreaView>
+      </Theme.Provider>
+    </SafeAreaProvider>
+  );
+}
+function Planner({
+  identity,
+  store,
+  logout,
+}: {
+  identity: AccountIdentity;
+  store: AccountStore;
+  logout: () => Promise<void>;
+}) {
+  const active = useRef(true);
   const [focusedControl, setFocusedControl] = useState("");
   const [state, setState] = useState<AppState | null>(null),
     [tab, setTab] = useState("Today"),
     [message, setMessage] = useState(""),
-    [saveStatus, setSaveStatus] = useState("Loading local data…"),
+    [saveStatus, setSaveStatus] = useState("Loading account data…"),
     [loadError, setLoadError] = useState(""),
     [, tick] = useState(0);
   const history = useRef<AppState[]>([]),
@@ -88,25 +159,58 @@ export default function App() {
       ? dark
       : light;
   const notify = (m: string) => {
+    if (!active.current) return;
     setMessage(m);
     if (messageTimer.current) clearTimeout(messageTimer.current);
     messageTimer.current = setTimeout(() => setMessage(""), 8500);
   };
+  const accessDenied = (error: unknown) =>
+    handleAccountAccessDenied(error, {
+      deactivate: () => {
+        active.current = false;
+        ++saveRevision.current;
+        stateRef.current = null;
+        durableState.current = null;
+        history.current = [];
+        if (messageTimer.current) clearTimeout(messageTimer.current);
+        clearNotificationOwner(identity.id);
+      },
+      logout,
+    });
+  const accountOperation = async <T,>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (active.current) accessDenied(error);
+      throw error;
+    }
+  };
   const load = () =>
-    loadState()
+    store
+      .loadState()
       .then((a) => {
-        setState(a ?? initialState());
+        if (!active.current) return;
+        setState(a);
         setLoadError("");
       })
-      .catch((e) =>
+      .catch((e) => {
+        if (!active.current || accessDenied(e)) return;
         setLoadError(
-          `Local data could not be read: ${e.message}. Existing data has been retained.`,
-        ),
-      );
+          `Account data could not be read: ${e.message}. Existing data has been retained.`,
+        );
+      });
   useEffect(() => {
+    active.current = true;
     load();
     const interval = setInterval(() => tick((x) => x + 1), 60000);
     return () => {
+      active.current = false;
+      ++saveRevision.current;
+      stateRef.current = null;
+      durableState.current = null;
+      history.current = [];
       clearInterval(interval);
       if (messageTimer.current) clearTimeout(messageTimer.current);
     };
@@ -118,19 +222,25 @@ export default function App() {
     stateRef.current = state;
     if (!state) return;
     const revision = ++saveRevision.current;
-    setSaveStatus("Saving on this device…");
-    saveState(state)
+    setSaveStatus("Saving your account…");
+    store
+      .saveState(state)
       .then(() => {
-        if (revision === saveRevision.current) {
-          setSaveStatus("Saved on this device");
+        if (active.current && revision === saveRevision.current) {
+          setSaveStatus(
+            store.status().offline
+              ? "Saved on device · sync pending"
+              : "Saved to your account",
+          );
           durableState.current = state;
-          syncReminders(state, systemClock).catch((e) =>
+          syncReminders(state, systemClock, identity.id).catch((e) =>
             notify(`Reminder scheduling needs attention: ${e.message}`),
           );
         }
       })
       .catch((e) => {
-        if (revision === saveRevision.current) {
+        if (!active.current || accessDenied(e)) return;
+        if (active.current && revision === saveRevision.current) {
           setSaveStatus("Save failed");
           notify(`Your latest changes could not be saved: ${e.message}`);
         }
@@ -141,8 +251,8 @@ export default function App() {
       if (phase === "active") {
         tick((x) => x + 1);
         if (durableState.current)
-          syncReminders(durableState.current, systemClock).catch((e) =>
-            notify(`Reminder refresh failed: ${e.message}`),
+          syncReminders(durableState.current, systemClock, identity.id).catch(
+            (e) => notify(`Reminder refresh failed: ${e.message}`),
           );
       }
     });
@@ -192,10 +302,17 @@ export default function App() {
                   Wakey-Wakey!
                 </Text>
                 <WhiteSurface.Provider value={true}>
-                  <Body>{loadError || "Opening your local planner…"}</Body>
+                  <Body>{loadError || "Opening your account planner…"}</Body>
                 </WhiteSurface.Provider>
                 {!!loadError && (
-                  <Button title="Retry reading saved data" onPress={load} />
+                  <>
+                    <Button title="Retry reading saved data" onPress={load} />
+                    <Button
+                      title="Log out"
+                      secondary
+                      onPress={() => void logout()}
+                    />
+                  </>
                 )}
               </View>
             ) : (
@@ -345,7 +462,7 @@ export default function App() {
                       <Text
                         style={{ fontSize: 11, color: c.muted, lineHeight: 18 }}
                       >
-                        Your time, thoughtfully planned.{"\n"}Local by default.
+                        Your time, thoughtfully planned.{"\n"}Your own account.
                       </Text>
                     </View>
                   )}
@@ -377,7 +494,18 @@ export default function App() {
                       ) : tab === "Sleep" ? (
                         <Sleep {...props!} />
                       ) : (
-                        <SettingsScreen {...props!} />
+                        <SettingsScreen
+                          {...props!}
+                          saveAccount={(a) =>
+                            accountOperation(() => store.saveState(a))
+                          }
+                          resetAccount={() =>
+                            accountOperation(() => store.deleteState())
+                          }
+                          accountEmail={identity.email}
+                          accountId={identity.id}
+                          logout={logout}
+                        />
                       )}
                     </View>
                   </ScrollView>

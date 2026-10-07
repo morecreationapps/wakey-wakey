@@ -353,7 +353,7 @@ export function Today({
             {s.name ? `Hello, ${s.name}.` : "Make tomorrow easier."}
           </Heading>
         </View>
-        <Pill text="LOCAL · NO ACCOUNT" />
+        <Pill text="YOUR ACCOUNT" />
       </Row>
       <View style={[ui.grid, { alignItems: "flex-start" }]}>
         <View style={[ui.col, ui.stack, { flex: 1.45 }]}>

@@ -26,6 +26,13 @@ import {
   SnapshotQueries,
 } from "../src/platform/storeCore";
 import * as browserStore from "../src/platform/store.web";
+import {
+  activateNotificationOwner,
+  clearNotificationOwner,
+} from "../src/platform/notificationScope";
+
+const NOTIFICATION_OWNER = "11111111-1111-4111-8111-111111111111";
+const NEXT_NOTIFICATION_OWNER = "22222222-2222-4222-8222-222222222222";
 
 const nativeMocks = vi.hoisted(() => ({
   getPermissionsAsync: vi.fn(async () => ({
@@ -477,6 +484,7 @@ describe("N: visible permission and unsupported alarm status", () => {
   });
   it("native permission denial returns visible status, cancels obsolete app reminders and never schedules", async () => {
     const native = await import("../src/platform/notifications");
+    activateNotificationOwner(NOTIFICATION_OWNER);
     nativeMocks.getAllScheduledNotificationsAsync.mockResolvedValueOnce([
       { identifier: "wakey:duty:deleted:departure", content: { data: {} } },
     ]);
@@ -492,6 +500,7 @@ describe("N: visible permission and unsupported alarm status", () => {
   });
   it("native test and explicit permission requests handle denial without an alarm or crash", async () => {
     const native = await import("../src/platform/notifications");
+    activateNotificationOwner(NOTIFICATION_OWNER);
     expect((await native.testNotification()).permission).toBe("denied");
     expect((await native.requestReminders()).permission).toBe("denied");
     expect(nativeMocks.requestPermissionsAsync).toHaveBeenCalledTimes(1);
@@ -499,6 +508,7 @@ describe("N: visible permission and unsupported alarm status", () => {
   });
   it("serialises concurrent native resyncs so the latest rota wins and StrictEffects repeats add nothing", async () => {
     const native = await import("../src/platform/notifications");
+    activateNotificationOwner(NOTIFICATION_OWNER);
     const rows = new Map<
       string,
       { identifier: string; content: { data: Record<string, unknown> } }
@@ -564,6 +574,156 @@ describe("N: visible permission and unsupported alarm status", () => {
     expect(result.through).toBe(
       Math.max(...expected.map((record) => record.at)),
     );
+  });
+  it("invalidates queued resyncs at logout and refuses a previous owner's callback after account switching", async () => {
+    const native = await import("../src/platform/notifications");
+    const rows = new Map<
+      string,
+      { identifier: string; content: { data: Record<string, unknown> } }
+    >();
+    const permission = {
+      status: "granted",
+      granted: true,
+      ios: { status: 2 },
+    };
+    nativeMocks.getPermissionsAsync.mockResolvedValue(permission);
+    nativeMocks.getAllScheduledNotificationsAsync.mockImplementation(
+      async () => [...rows.values()],
+    );
+    nativeMocks.cancelScheduledNotificationAsync.mockImplementation(
+      async (id) => {
+        rows.delete(id);
+      },
+    );
+    nativeMocks.scheduleNotificationAsync.mockImplementation(
+      async (request) => {
+        const identifier = request.identifier!;
+        rows.set(identifier, {
+          identifier,
+          content: { data: request.content.data as Record<string, unknown> },
+        });
+        return identifier;
+      },
+    );
+    activateNotificationOwner(NOTIFICATION_OWNER);
+    const original = state();
+    await native.syncReminders(original, clock, NOTIFICATION_OWNER);
+    expect(rows.size).toBeGreaterThan(0);
+    const priorWrites = nativeMocks.scheduleNotificationAsync.mock.calls.length;
+
+    // Hold the native queue in an OS permission read, then invalidate the
+    // captured account before the queued resync can begin reconciliation.
+    let entered!: () => void;
+    let release!: () => void;
+    const permissionReadStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const permissionRead = new Promise<typeof permission>((resolve) => {
+      release = () => resolve(permission);
+    });
+    nativeMocks.getPermissionsAsync.mockImplementationOnce(async () => {
+      entered();
+      return permissionRead;
+    });
+    const blockingStatus = native.notificationStatus();
+    await permissionReadStarted;
+    const changed = {
+      ...original,
+      settings: { ...original.settings, outboundMax: 37 },
+    };
+    const queuedResync = native.syncReminders(
+      changed,
+      clock,
+      NOTIFICATION_OWNER,
+    );
+    clearNotificationOwner(NOTIFICATION_OWNER);
+    const cancellation = native.disableReminders();
+    release();
+    await Promise.all([blockingStatus, queuedResync, cancellation]);
+    expect(rows.size).toBe(0);
+    expect(nativeMocks.scheduleNotificationAsync.mock.calls.length).toBe(
+      priorWrites,
+    );
+
+    activateNotificationOwner(NEXT_NOTIFICATION_OWNER);
+    await native.syncReminders(changed, clock, NOTIFICATION_OWNER);
+    expect(rows.size).toBe(0);
+    expect(nativeMocks.scheduleNotificationAsync.mock.calls.length).toBe(
+      priorWrites,
+    );
+
+    // The active next account can still schedule its own reminders.
+    await native.syncReminders(original, clock, NEXT_NOTIFICATION_OWNER);
+    expect(rows.size).toBe(desiredReminders(original, clock).length);
+    expect(
+      nativeMocks.scheduleNotificationAsync.mock.calls.length,
+    ).toBeGreaterThan(priorWrites);
+  });
+  it("does not schedule a previous account's test reminder when logout happens during an OS permission wait", async () => {
+    const native = await import("../src/platform/notifications");
+    const permission = { status: "granted", granted: true, ios: { status: 2 } };
+    nativeMocks.getPermissionsAsync.mockResolvedValue(permission);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const permissionRead = new Promise<typeof permission>((resolve) => {
+      release = () => resolve(permission);
+    });
+    nativeMocks.getPermissionsAsync.mockImplementationOnce(async () => {
+      entered();
+      return permissionRead;
+    });
+    activateNotificationOwner(NOTIFICATION_OWNER);
+    const oldRequest = native.testNotification();
+    await started;
+    clearNotificationOwner(NOTIFICATION_OWNER);
+    activateNotificationOwner(NEXT_NOTIFICATION_OWNER);
+    release();
+    await oldRequest;
+    expect(nativeMocks.scheduleNotificationAsync).not.toHaveBeenCalled();
+
+    const activeRequest = await native.testNotification();
+    expect(
+      nativeMocks.scheduleNotificationAsync,
+    ).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ identifier: "wakey:test" }),
+    );
+    expect(activeRequest.message).toContain("Test requested");
+  });
+  it("cancels a test reminder whose OS scheduling finishes after its account logs out", async () => {
+    const native = await import("../src/platform/notifications");
+    nativeMocks.getPermissionsAsync.mockResolvedValue({
+      status: "granted",
+      granted: true,
+      ios: { status: 2 },
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const scheduled = new Promise<string>((resolve) => {
+      release = () => resolve("wakey:test");
+    });
+    nativeMocks.scheduleNotificationAsync.mockImplementationOnce(async () => {
+      entered();
+      return scheduled;
+    });
+    activateNotificationOwner(NOTIFICATION_OWNER);
+    const oldRequest = native.testNotification();
+    await started;
+    clearNotificationOwner(NOTIFICATION_OWNER);
+    release();
+    const result = await oldRequest;
+    expect(nativeMocks.cancelScheduledNotificationAsync).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(
+      nativeMocks.cancelScheduledNotificationAsync,
+    ).toHaveBeenLastCalledWith("wakey:test");
+    expect(result.message).not.toContain("Test requested");
   });
 });
 
@@ -718,6 +878,7 @@ describe("offline snapshot persistence via the real serial store and a database 
   });
 });
 afterEach(() => {
+  clearNotificationOwner();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });

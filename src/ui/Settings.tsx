@@ -24,11 +24,26 @@ import {
 import { NotificationStatus } from "../platform/reminders";
 import { exportBackup, parseBackup } from "../data/backup";
 import { pickTextFile, exportTextFile } from "../platform/files";
-import { deleteState, saveState } from "../platform/store";
+
 import { initialState } from "../data/defaults";
 import { AppState, systemClock } from "../model";
 import { displayDate, displayTime, localAt } from "../engine/time";
-export function SettingsScreen({ state, change, notify }: ScreenProps) {
+export function SettingsScreen({
+  state,
+  change,
+  notify,
+  saveAccount,
+  resetAccount,
+  accountEmail,
+  accountId,
+  logout,
+}: ScreenProps & {
+  saveAccount: (state: AppState) => Promise<void>;
+  resetAccount: () => Promise<void>;
+  accountEmail: string;
+  accountId: string;
+  logout: () => Promise<void>;
+}) {
   const [section, setSection] = useState("Work"),
     [status, setStatus] = useState<NotificationStatus | null>(null),
     [restore, setRestore] = useState<AppState | null>(null),
@@ -51,6 +66,11 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
   return (
     <View style={ui.stack}>
       <Heading>Your settings.</Heading>
+      <Card>
+        <Heading small>Your account</Heading>
+        <Body>{accountEmail}</Body>
+        <Button title="Log out" icon="log-out" onPress={() => void logout()} />
+      </Card>
       <Body muted>
         Change your routine as life changes. Saved duties keep their recorded
         local work time and timezone.
@@ -180,8 +200,8 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
             secondary
             onPress={() =>
               run(async () => {
-                await saveState(state);
-                return syncReminders(state, systemClock);
+                await saveAccount(state);
+                return syncReminders(state, systemClock, accountId);
               })
             }
           />
@@ -201,10 +221,12 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
       <Card>
         <Heading small>Privacy, backup & restore</Heading>
         <Body>
-          Your rota, settings, tasks and diary stay local. No mandatory account,
-          analytics or AI upload. Native storage uses ordinary SQLite;
-          encryption has not been implemented or verified. Browser preview uses
-          this browser’s local storage.
+          Your rota, settings, tasks and diary belong to your verified account
+          and synchronise with its protected backend. This device keeps an
+          account-specific copy for saved changes. Native planner storage uses
+          ordinary SQLite; encryption of planner records has not been
+          implemented. Native session credentials use secure storage. Browser
+          copies use this browser’s local storage.
         </Body>
         <Body muted>
           A backup includes private notes and sleep logs. Keep the exported file
@@ -241,7 +263,7 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
           <Notice>
             Valid backup preview: {restore.entries.length} rota entries,{" "}
             {restore.tasks.length} tasks, {restore.sleepLogs.length} sleep
-            check-ins. Confirming replaces the currently saved app data.
+            check-ins. Confirming replaces this account’s planner and synchronised data.
             Reminders are disabled until you opt in again.
           </Notice>
         )}
@@ -256,7 +278,7 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
                 }));
                 setRestore(null);
                 notify(
-                  "Backup restored. Reminders remain off. Undo is available.",
+                  "Backup opened in your planner; account saving is in progress. Reminders remain off. Undo is available.",
                 );
               }}
             />
@@ -270,8 +292,8 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
         <Button
           title={
             deleteConfirm
-              ? "Confirm delete all my local data"
-              : "Delete all my local data"
+              ? "Confirm reset my account planner"
+              : "Reset my account planner"
           }
           danger
           icon="trash-2"
@@ -282,10 +304,12 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
             }
             try {
               await disableReminders();
-              await deleteState();
+              await resetAccount();
               change(() => initialState());
               setDeleteConfirm(false);
-              notify("Saved local app data cleared. A fresh setup is open.");
+              notify(
+                "Your account planner was reset. A fresh setup is open; your login is retained.",
+              );
             } catch (e) {
               notify(
                 `Deletion could not be completed: ${(e as Error).message}`,
@@ -295,8 +319,9 @@ export function SettingsScreen({ state, change, notify }: ScreenProps) {
         />
         {deleteConfirm && (
           <Notice error>
-            This clears rota, tasks, settings and diary on this device. Export a
-            backup first if you need to keep them.
+            This resets your account’s rota, tasks, settings and diary,
+            including the synchronised copy. Export a backup first if you need
+            to keep them.
           </Notice>
         )}
       </Card>
