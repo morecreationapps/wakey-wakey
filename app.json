@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Wakey-Wakey!",
+    "slug": "wakey-wakey",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "wakey-wakey",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.morecreationapps.wakeywakey"
+    },
+    "android": {
+      "package": "com.morecreationapps.wakeywakey"
+    },
+    "web": {
+      "bundler": "metro",
+      "name": "Wakey-Wakey!"
+    },
+    "plugins": ["expo-sqlite", "expo-notifications", "expo-sharing"],
+    "extra": {
+      "publicReleaseReviewed": false
+    }
+  }
+}

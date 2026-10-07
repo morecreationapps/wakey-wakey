@@ -1,0 +1,109 @@
+import { AppState, Settings, ShiftTemplate } from "../model";
+export const starterTemplates: ShiftTemplate[] = [
+  {
+    id: "early",
+    name: "Early shift",
+    duty: "",
+    category: "Early",
+    start: "06:00",
+    end: "14:18",
+  },
+  {
+    id: "late",
+    name: "Late shift",
+    duty: "",
+    category: "Late",
+    start: "14:08",
+    end: "22:26",
+  },
+];
+export function newSettings(): Settings {
+  return {
+    name: "",
+    role: "",
+    safetyCritical: false,
+    timezone: "Europe/London",
+    timezoneConfirmed: false,
+    dateFormat: "UK",
+    clockFormat: "24",
+    firstDay: "Monday",
+    travelMode: "",
+    outboundMin: null,
+    outboundMax: null,
+    returnMinutes: null,
+    arrivalBuffer: 10,
+    routines: [],
+    additionalPrepConfirmed: false,
+    sleepTarget: 480,
+    latency: 30,
+    windDown: 60,
+    postWorkMinutes: null,
+    earlyBed: null,
+    earlyWake: null,
+    lateBed: null,
+    lateWake: null,
+    restBed: null,
+    restWake: null,
+    consistentWake: true,
+    caffeine: false,
+    caffeineBeforeBed: 360,
+    freeMinutes: 120,
+    theme: "system",
+    remindersEnabled: false,
+    reminderKinds: [
+      "prepare",
+      "windDown",
+      "bedtime",
+      "wake",
+      "departure",
+      "appointment",
+      "transition",
+    ],
+    origins: {
+      freeMinutes: "suggested",
+      timezone: "suggested",
+      arrivalBuffer: "suggested",
+      sleepTarget: "suggested",
+      latency: "suggested",
+      windDown: "suggested",
+    },
+    onboardingStep: 0,
+    onboardingComplete: false,
+    onboardingRotaPending: false,
+  };
+}
+export function initialState(): AppState {
+  return {
+    schemaVersion: 1,
+    settings: newSettings(),
+    entries: [],
+    templates: [],
+    patterns: [],
+    tasks: [],
+    sleepLogs: [],
+  };
+}
+export function suppliedProfile(settings: Settings): Settings {
+  return {
+    ...settings,
+    outboundMin: 15,
+    outboundMax: 20,
+    sleepTarget: 420,
+    routines: [
+      {
+        id: "combined",
+        name: "Shower and coffee",
+        minutes: 30,
+        includes: ["shower", "coffee"],
+        essential: true,
+      },
+    ],
+    origins: {
+      ...settings.origins,
+      outboundMin: "entered",
+      outboundMax: "entered",
+      sleepTarget: "suggested",
+      combined: "entered",
+    },
+  };
+}
