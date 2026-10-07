@@ -16,6 +16,11 @@ explanation content when expanded. No storage, planning, rota, task or navigatio
 handler changed. GitHub's clean build/deployment and any subsequent responsive
 checks are reported with the delivery response.
 
+At 320 pixels, reduced inner padding gives the event label more room while
+preserving both boxes and the 10-pixel gap. The rendered local timeline measured
+238 pixels wide with no horizontal overflow. Responsive deployment checks use a
+separate sample-data preview and do not change production clock/date preferences.
+
 Changed files: `src/ui/TodaySleep.tsx`, `src/ui/Rota.tsx`, `src/ui/Plan.tsx` and
 this record. This spacing/shape change leaves the previously measured palette
 contrast limitations unchanged; no accessibility conformance claim is made.
