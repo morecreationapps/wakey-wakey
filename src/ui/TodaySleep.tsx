@@ -109,6 +109,7 @@ export function PlanTimeline({
   state: ScreenProps["state"];
 }) {
   const [expanded, setExpanded] = useState<string | null>(null),
+    [focusedEvent, setFocusedEvent] = useState<string | null>(null),
     c = useTheme(),
     s = state.settings;
   const p = planShift(entry, s, state.entries, state.tasks),
@@ -126,18 +127,26 @@ export function PlanTimeline({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Why this time? ${e.label}`}
+            onFocus={() => setFocusedEvent(e.kind)}
+            onBlur={() => setFocusedEvent(null)}
             onPress={() => setExpanded(expanded === e.kind ? null : e.kind)}
-            style={{
+            style={({ pressed }) => ({
               flexDirection: "row",
               gap: 14,
               paddingVertical: 9,
               alignItems: "center",
-            }}
+              backgroundColor: c.accent,
+              outlineColor: c.onAccent,
+              outlineWidth: focusedEvent === e.kind || pressed ? 2 : 0,
+              outlineStyle: "solid",
+              outlineOffset: -3,
+              transform: [{ translateY: pressed ? 1 : 0 }],
+            })}
           >
             <View style={{ width: 78 }}>
               <Text
                 style={{
-                  color: c.ink,
+                  color: c.onAccent,
                   fontSize: 19,
                   fontWeight: "500",
                   letterSpacing: -0.6,
@@ -145,7 +154,7 @@ export function PlanTimeline({
               >
                 {displayTime(e.at, tz, s.clockFormat)}
               </Text>
-              <Text style={{ color: c.muted, fontSize: 10, marginTop: 3 }}>
+              <Text style={{ color: c.onAccent, fontSize: 10, marginTop: 3 }}>
                 {displayDate(localAt(e.at, tz).slice(0, 10), s.dateFormat)}
               </Text>
             </View>
@@ -154,14 +163,28 @@ export function PlanTimeline({
                 height: 40,
                 width: 3,
                 borderRadius: 3,
-                backgroundColor: ["workStart", "workEnd"].includes(e.kind)
-                  ? c.accent
-                  : c.line,
+                backgroundColor: c.onAccent,
               }}
             />
             <View style={{ flex: 1 }}>
-              <Body style={{ fontWeight: "600" }}>{e.label}</Body>
-              <Body muted style={{ fontSize: 11 }}>
+              <Body
+                style={{
+                  fontWeight: "600",
+                  color: c.onAccent,
+                  backgroundColor: c.accent,
+                  textDecorationLine:
+                    expanded === e.kind ? "underline" : "none",
+                }}
+              >
+                {e.label}
+              </Body>
+              <Body
+                style={{
+                  fontSize: 11,
+                  color: c.onAccent,
+                  backgroundColor: c.accent,
+                }}
+              >
                 Why this time? {expanded === e.kind ? "−" : "+"}
               </Body>
             </View>
@@ -178,12 +201,12 @@ export function PlanTimeline({
                         : "clock"
               }
               size={18}
-              colour={c.muted}
+              colour={c.onAccent}
             />
           </Pressable>
           {expanded === e.kind && (
             <View
-              style={{ padding: 12, backgroundColor: c.bg, borderRadius: 12 }}
+              style={{ padding: 12, backgroundColor: c.card, borderRadius: 12 }}
             >
               <Body muted style={{ fontSize: 12 }}>
                 {e.why}
@@ -272,6 +295,7 @@ export function Today({
   const c = useTheme(),
     s = state.settings,
     today = dateInZone(systemClock, s.timezone);
+  const [focusedTask, setFocusedTask] = useState<string | null>(null);
   const current = state.entries.find((e) => {
     try {
       const w = workBounds(e);
@@ -319,8 +343,8 @@ export function Today({
         <View style={[ui.col, ui.stack, { flex: 1.45 }]}>
           <Card
             style={{
-              backgroundColor: c.soft,
-              borderColor: c.soft,
+              backgroundColor: c.card,
+              borderColor: c.line,
               padding: 26,
             }}
           >
@@ -435,6 +459,8 @@ export function Today({
                         accessibilityState={{
                           checked: t.state === "completed",
                         }}
+                        onFocus={() => setFocusedTask(t.id)}
+                        onBlur={() => setFocusedTask(null)}
                         onPress={() => {
                           change((a) => ({
                             ...a,
@@ -459,13 +485,26 @@ export function Today({
                               : "Next task occurrence completed.",
                           );
                         }}
-                        style={{
+                        style={({ pressed }) => ({
                           padding: 10,
-                          backgroundColor: c.soft,
+                          backgroundColor:
+                            t.state === "completed" ? c.accent : c.card,
                           borderRadius: 10,
-                        }}
+                          outlineColor:
+                            t.state === "completed" ? c.onAccent : c.accent,
+                          outlineWidth: focusedTask === t.id || pressed ? 2 : 0,
+                          outlineStyle: "solid",
+                          outlineOffset: t.state === "completed" ? -3 : 1,
+                          transform: [{ translateY: pressed ? 1 : 0 }],
+                        })}
                       >
-                        <Icon name="check" size={17} />
+                        <Icon
+                          name={t.state === "completed" ? "check" : "square"}
+                          size={17}
+                          colour={
+                            t.state === "completed" ? c.onAccent : c.accent
+                          }
+                        />
                       </Pressable>
                       <View style={{ flex: 1 }}>
                         <Body style={{ fontWeight: "600" }}>{t.title}</Body>

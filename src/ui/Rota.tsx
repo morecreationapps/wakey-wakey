@@ -23,6 +23,7 @@ import {
   Toggle,
   Pill,
   Notice,
+  Icon,
   ui,
 } from "./components";
 import { dateInZone, addDays, displayDate, zonedEpoch } from "../engine/time";
@@ -89,6 +90,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
     today = dateInZone(systemClock, s.timezone);
   const [anchor, setAnchor] = useState(today),
     [view, setView] = useState<"Day" | "Week" | "Month" | "Year">("Month");
+  const [focusedDate, setFocusedDate] = useState<string | null>(null);
   const [edit, setEdit] = useState<RotaEntry | null>(null),
     [review, setReview] = useState<string[]>([]),
     [removeReview, setRemoveReview] = useState(false);
@@ -339,12 +341,15 @@ export function Rota({ state, change, notify }: ScreenProps) {
               <Pressable
                 key={date}
                 accessibilityRole="button"
+                accessibilityState={{ selected: date === anchor }}
                 accessibilityLabel={`${displayDate(date, s.dateFormat)} ${entry ? statusLabel(entry.status) + " " + entry.duty : "Unknown"}`}
+                onFocus={() => setFocusedDate(date)}
+                onBlur={() => setFocusedDate(null)}
                 onPress={() => {
                   setAnchor(date);
                   if (view === "Year") setView("Month");
                 }}
-                style={{
+                style={({ pressed }) => ({
                   width:
                     view === "Year"
                       ? "31.5%"
@@ -352,19 +357,26 @@ export function Rota({ state, change, notify }: ScreenProps) {
                         ? "100%"
                         : "13.3%",
                   minHeight: view === "Year" ? 85 : 78,
-                  backgroundColor: date === anchor ? c.soft : c.bg,
+                  backgroundColor: c.accent,
                   borderWidth: 1,
-                  borderColor: date === anchor ? c.accent : c.line,
+                  borderColor:
+                    date === anchor || pressed ? c.onAccent : c.accent,
                   borderRadius: 12,
                   padding: 8,
                   gap: 5,
-                }}
+                  outlineColor: c.onAccent,
+                  outlineWidth: focusedDate === date || pressed ? 2 : 0,
+                  outlineStyle: "solid",
+                  outlineOffset: -4,
+                  transform: [{ translateY: pressed ? 1 : 0 }],
+                })}
               >
                 <Text
                   style={{
-                    color: c.ink,
+                    color: c.onAccent,
                     fontSize: 14,
                     fontWeight: date === anchor ? "700" : "500",
+                    textDecorationLine: date === anchor ? "underline" : "none",
                   }}
                 >
                   {view === "Year"
@@ -377,7 +389,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
                 <Text
                   numberOfLines={2}
                   style={{
-                    color: entry?.status === "Rest" ? c.accent : c.muted,
+                    color: c.onAccent,
                     fontSize: 10,
                     fontWeight: "600",
                   }}
@@ -395,7 +407,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
                         : "—"}
                 </Text>
                 {list.length > 1 && view !== "Year" && (
-                  <Text style={{ fontSize: 9, color: c.warn }}>
+                  <Text style={{ fontSize: 9, color: c.onAccent }}>
                     +{list.length - 1} more
                   </Text>
                 )}
@@ -804,12 +816,12 @@ export function Rota({ state, change, notify }: ScreenProps) {
                   </Body>
                   {r.errors.map((e) => (
                     <Body key={e} style={{ color: c.red, fontSize: 12 }}>
-                      {e}
+                      <Icon name="alert-circle" size={12} /> Error: {e}
                     </Body>
                   ))}
                   {r.warnings.map((e) => (
                     <Body key={e} style={{ color: c.warn, fontSize: 12 }}>
-                      {e}
+                      <Icon name="alert-triangle" size={12} /> Warning: {e}
                     </Body>
                   ))}
                 </View>

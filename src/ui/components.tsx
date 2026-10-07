@@ -1,4 +1,4 @@
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useState } from "react";
 import {
   View,
   Text,
@@ -6,41 +6,15 @@ import {
   TextInput,
   StyleSheet,
   Switch,
+  Platform,
   ViewStyle,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { AppState } from "../model";
-export const light = {
-  bg: "#F4F5EF",
-  card: "#FFFFFF",
-  ink: "#172F2B",
-  muted: "#596B64",
-  line: "#DFE6DE",
-  accent: "#3B6555",
-  soft: "#E7EEE5",
-  sun: "#F3E6B9",
-  warn: "#8E4C24",
-  warnBg: "#FFF1DF",
-  red: "#A13B3B",
-  redBg: "#FCECEC",
-  night: "#E6E9F3",
-};
-export const dark = {
-  bg: "#14211E",
-  card: "#1D302A",
-  ink: "#EDF3E9",
-  muted: "#ADBCB3",
-  line: "#345045",
-  accent: "#A4CEAA",
-  soft: "#2B4438",
-  sun: "#4A4326",
-  warn: "#F3C595",
-  warnBg: "#443221",
-  red: "#F4ADAD",
-  redBg: "#442929",
-  night: "#30354C",
-};
-export type Palette = typeof light;
+import { palette, type Palette } from "./theme";
+export { brand, type Palette } from "./theme";
+export const light = palette;
+export const dark = palette;
 export const Theme = createContext<Palette>(light);
 export const useTheme = () => useContext(Theme);
 export type Change = (fn: (state: AppState) => AppState) => void;
@@ -74,6 +48,7 @@ export function Label({
       style={[
         {
           color: c.muted,
+          backgroundColor: c.card,
           fontSize: 11,
           fontWeight: "700",
           letterSpacing: 1.5,
@@ -99,7 +74,12 @@ export function Body({
   return (
     <Text
       style={[
-        { color: muted ? c.muted : c.ink, fontSize: 14, lineHeight: 22 },
+        {
+          color: muted ? c.muted : c.ink,
+          backgroundColor: c.card,
+          fontSize: 14,
+          lineHeight: 22,
+        },
         style,
       ]}
     >
@@ -119,6 +99,7 @@ export function Heading({
     <Text
       style={{
         color: c.ink,
+        backgroundColor: c.card,
         fontSize: small ? 20 : 32,
         fontWeight: "600",
         letterSpacing: small ? -0.4 : -1,
@@ -149,6 +130,7 @@ export function Card({
           gap: 12,
         },
         style,
+        { backgroundColor: c.card },
       ]}
     >
       {children}
@@ -196,37 +178,41 @@ export function Button({
   danger?: boolean;
 }) {
   const c = useTheme();
+  const [focused, setFocused] = useState(false);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={title}
+      accessibilityState={{ disabled }}
+      accessibilityHint={danger ? "Destructive action" : undefined}
       disabled={disabled}
       onPress={onPress}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       style={({ pressed }) => ({
-        backgroundColor: danger ? c.redBg : secondary ? c.soft : c.accent,
+        backgroundColor: c.accent,
         borderRadius: 13,
         minHeight: small ? 44 : 48,
         paddingHorizontal: small ? 14 : 19,
         paddingVertical: 12,
-        opacity: disabled ? 0.4 : pressed ? 0.7 : 1,
+        outlineColor: c.white,
+        outlineWidth: focused || pressed || disabled ? 2 : secondary ? 1 : 0,
+        outlineOffset: -4,
+        outlineStyle: disabled ? "dashed" : "solid",
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
         gap: 8,
+        transform: [{ translateY: pressed ? 1 : 0 }],
       })}
     >
-      {!!icon && (
-        <Icon
-          name={icon}
-          size={17}
-          colour={danger ? c.red : secondary ? c.ink : c.bg}
-        />
-      )}
+      {!!icon && <Icon name={icon} size={17} colour={c.white} />}
       <Text
         style={{
-          color: danger ? c.red : secondary ? c.ink : c.bg,
+          color: c.white,
           fontWeight: "600",
           fontSize: 13,
+          textDecorationLine: focused ? "underline" : "none",
         }}
       >
         {title}
@@ -276,8 +262,11 @@ export function Field({
   multiline?: boolean;
 }) {
   const c = useTheme();
+  const [focused, setFocused] = useState(false);
   return (
-    <View style={{ gap: 6, flexGrow: 1, minWidth: 140 }}>
+    <View
+      style={{ gap: 6, flexGrow: 1, minWidth: 140, backgroundColor: c.card }}
+    >
       <Text style={{ fontSize: 13, color: c.ink, fontWeight: "600" }}>
         {label}
       </Text>
@@ -285,6 +274,8 @@ export function Field({
         accessibilityLabel={label}
         value={value}
         onChangeText={onChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         placeholder={placeholder}
         placeholderTextColor={c.muted}
         keyboardType={numeric ? "numeric" : "default"}
@@ -292,7 +283,7 @@ export function Field({
         autoCapitalize="none"
         style={{
           color: c.ink,
-          backgroundColor: c.bg,
+          backgroundColor: c.card,
           borderWidth: 1,
           borderColor: c.line,
           borderRadius: 12,
@@ -300,6 +291,9 @@ export function Field({
           paddingVertical: 12,
           fontSize: 15,
           minHeight: 46,
+          outlineColor: c.accent,
+          outlineWidth: focused ? 2 : 0,
+          outlineOffset: 1,
           ...(multiline ? { minHeight: 130, textAlignVertical: "top" } : {}),
         }}
       />
@@ -323,6 +317,7 @@ export function Toggle({
   hint?: string;
 }) {
   const c = useTheme();
+  const [focused, setFocused] = useState(false);
   return (
     <View
       style={{
@@ -341,12 +336,64 @@ export function Toggle({
           </Body>
         )}
       </View>
-      <Switch
-        accessibilityLabel={label}
-        value={value}
-        onValueChange={onChange}
-        trackColor={{ false: c.line, true: c.accent }}
-      />
+      {Platform.OS === "web" ? (
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityLabel={label}
+          accessibilityState={{ checked: value }}
+          aria-checked={value}
+          onPress={() => onChange(!value)}
+          {...{
+            onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+              // RN Web activates role="switch" with Enter; retain Space too.
+              if (event.key === " ") {
+                event.preventDefault();
+                if (!event.repeat) onChange(!value);
+              }
+            },
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={({ pressed }) => ({
+            width: 40,
+            height: 20,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: c.accent,
+            backgroundColor: value ? c.accent : c.white,
+            outlineColor: c.accent,
+            outlineWidth: focused || pressed ? 2 : 1,
+            outlineOffset: 1,
+            outlineStyle: value || focused ? "solid" : "dashed",
+          })}
+        >
+          <View
+            pointerEvents="none"
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 9,
+              backgroundColor: value ? c.white : c.accent,
+              alignSelf: value ? "flex-end" : "flex-start",
+            }}
+          />
+        </Pressable>
+      ) : (
+        <Switch
+          accessibilityLabel={label}
+          value={value}
+          onValueChange={onChange}
+          trackColor={{ false: c.white, true: c.accent }}
+          thumbColor={value ? c.white : c.orange}
+          ios_backgroundColor={c.white}
+          style={{
+            outlineColor: c.orange,
+            outlineWidth: 1,
+            outlineOffset: 1,
+            outlineStyle: value ? "solid" : "dashed",
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -360,29 +407,38 @@ export function Choices<T extends string>({
   onChange: (v: T) => void;
 }) {
   const c = useTheme();
+  const [focused, setFocused] = useState<T | null>(null);
   return (
-    <Row>
+    <Row style={{ backgroundColor: c.card }}>
       {values.map((v) => (
         <Pressable
           key={v}
           accessibilityRole="button"
           accessibilityLabel={v}
           accessibilityState={{ selected: v === value }}
+          aria-pressed={v === value}
           onPress={() => onChange(v)}
-          style={{
-            backgroundColor: v === value ? c.accent : c.bg,
+          onFocus={() => setFocused(v)}
+          onBlur={() => setFocused(null)}
+          style={({ pressed }) => ({
+            backgroundColor: c.accent,
             borderRadius: 10,
             padding: 12,
             minHeight: 44,
             borderColor: c.line,
             borderWidth: 1,
-          }}
+            outlineColor: focused === v ? c.orange : c.white,
+            outlineWidth: v === value || pressed || focused === v ? 2 : 0,
+            outlineOffset: focused === v ? 2 : -4,
+            transform: [{ translateY: pressed ? 1 : 0 }],
+          })}
         >
           <Text
             style={{
               fontSize: 12,
-              fontWeight: "600",
-              color: v === value ? c.bg : c.ink,
+              fontWeight: v === value ? "800" : "600",
+              color: c.white,
+              textDecorationLine: v === value ? "underline" : "none",
             }}
           >
             {v}
@@ -410,7 +466,7 @@ export function Notice({
       }}
     >
       <Body style={{ color: error ? c.red : c.warn, fontSize: 13 }}>
-        {children}
+        <Icon name={error ? "alert-circle" : "info"} size={13} /> {children}
       </Body>
     </View>
   );

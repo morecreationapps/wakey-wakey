@@ -12,6 +12,7 @@ import {
   Heading,
   Notice,
   ScreenProps,
+  useTheme,
   ui,
   Pill,
 } from "./components";
@@ -397,7 +398,8 @@ export function SettingsFields({
   );
 }
 export function Setup({ state, change, notify }: ScreenProps) {
-  const step = state.settings.onboardingStep,
+  const c = useTheme(),
+    step = state.settings.onboardingStep,
     s = state.settings;
   const pendingPreview = s.onboardingRotaPending
     ? previewImport(localRotaText, s.timezone, state.entries, "UK")
@@ -470,7 +472,7 @@ export function Setup({ state, change, notify }: ScreenProps) {
         <Pill text={`SETUP · ${step + 1} OF 6`} />
         <Body muted>Your answers save as you go</Body>
       </Row>
-      <Row>
+      <Row style={{ backgroundColor: c.card }}>
         {steps.map((x, i) => (
           <View
             key={x}
@@ -478,7 +480,9 @@ export function Setup({ state, change, notify }: ScreenProps) {
               flex: 1,
               height: 5,
               borderRadius: 4,
-              backgroundColor: i <= step ? "#73947B" : "#DFE6DE",
+              backgroundColor: i <= step ? c.accent : c.card,
+              borderColor: c.accent,
+              borderWidth: i <= step ? 0 : 1,
             }}
           />
         ))}
@@ -523,7 +527,8 @@ export function Setup({ state, change, notify }: ScreenProps) {
               onPress={() => choose("scratch")}
             />
             <Body muted>
-              Your plans save on this device. No account or subscription required.
+              Your plans save on this device. No account or subscription
+              required.
             </Body>
           </View>
         ) : step < 5 ? (

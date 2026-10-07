@@ -40,16 +40,21 @@ class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { error: string | null }
 > {
+  static contextType = Theme;
   state = { error: null as string | null };
   static getDerivedStateFromError(error: Error) {
     return { error: error.message };
   }
   render() {
+    const c = this.context as React.ContextType<typeof Theme>;
     return this.state.error ? (
-      <View style={{ padding: 32, gap: 20 }}>
-        <Text style={{ fontSize: 24 }}>This screen needs attention.</Text>
-        <Text>{this.state.error}</Text>
-        <Text>
+      <View style={{ padding: 32, gap: 20, backgroundColor: c.card }}>
+        <Text style={{ fontSize: 24, color: c.ink }}>
+          <Icon name="alert-triangle" size={24} colour={c.ink} /> This screen
+          needs attention.
+        </Text>
+        <Text style={{ color: c.ink }}>{this.state.error}</Text>
+        <Text style={{ color: c.ink }}>
           Your saved information has not been deliberately deleted. Restart the
           app after correcting the issue.
         </Text>
@@ -60,6 +65,7 @@ class ErrorBoundary extends React.Component<
   }
 }
 export default function App() {
+  const [focusedControl, setFocusedControl] = useState("");
   const [state, setState] = useState<AppState | null>(null),
     [tab, setTab] = useState("Today"),
     [message, setMessage] = useState(""),
@@ -176,11 +182,11 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <Theme.Provider value={c}>
-        <StatusBar style={c === dark ? "light" : "dark"} />
+        <StatusBar style="dark" />
         <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
           <ErrorBoundary>
             {!state ? (
-              <View style={{ padding: 40, gap: 18 }}>
+              <View style={{ padding: 40, gap: 18, backgroundColor: c.card }}>
                 <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
                   Wakey-Wakey!
                 </Text>
@@ -221,12 +227,19 @@ export default function App() {
                     />
                     <Image
                       source={require("./assets/wakey-wakey-wordmark.png")}
-                      style={{ width: 168, height: 40, flexShrink: 1, minWidth: 0 }}
+                      style={{
+                        width: 168,
+                        height: 40,
+                        flexShrink: 1,
+                        minWidth: 0,
+                      }}
                       resizeMode="contain"
                       accessibilityLabel="Wakey-Wakey!"
                     />
                   </View>
-                  <View style={{ alignItems: "flex-end", gap: 5, flexShrink: 0 }}>
+                  <View
+                    style={{ alignItems: "flex-end", gap: 5, flexShrink: 0 }}
+                  >
                     <Text
                       style={{
                         fontSize: 10,
@@ -239,11 +252,23 @@ export default function App() {
                       <Pressable
                         accessibilityRole="button"
                         onPress={undo}
-                        style={{ padding: 7 }}
+                        onFocus={() => setFocusedControl("undo")}
+                        onBlur={() => setFocusedControl("")}
+                        style={({ pressed }) => ({
+                          padding: 7,
+                          backgroundColor: c.accent,
+                          borderRadius: 7,
+                          outlineColor: c.onAccent,
+                          outlineWidth:
+                            pressed || focusedControl === "undo" ? 2 : 0,
+                          outlineStyle: "solid",
+                          outlineOffset: -3,
+                          transform: [{ translateY: pressed ? 1 : 0 }],
+                        })}
                       >
                         <Text
                           style={{
-                            color: c.accent,
+                            color: c.onAccent,
                             fontSize: 12,
                             fontWeight: "600",
                           }}
@@ -263,6 +288,7 @@ export default function App() {
                         gap: 9,
                         borderRightWidth: 1,
                         borderColor: c.line,
+                        backgroundColor: c.card,
                       }}
                     >
                       {tabs.map((t) => (
@@ -271,27 +297,41 @@ export default function App() {
                           accessibilityRole="button"
                           accessibilityLabel={t.name}
                           accessibilityState={{ selected: tab === t.name }}
+                          aria-pressed={tab === t.name}
                           onPress={() => navigate(t.name)}
-                          style={{
+                          onFocus={() => setFocusedControl(`side-${t.name}`)}
+                          onBlur={() => setFocusedControl("")}
+                          style={({ pressed }) => ({
                             flexDirection: "row",
                             alignItems: "center",
                             gap: 13,
                             padding: 16,
                             borderRadius: 13,
-                            backgroundColor:
-                              tab === t.name ? c.soft : undefined,
-                          }}
+                            backgroundColor: c.accent,
+                            outlineColor:
+                              focusedControl === `side-${t.name}`
+                                ? c.accent
+                                : c.onAccent,
+                            outlineStyle: "solid",
+                            outlineOffset:
+                              focusedControl === `side-${t.name}` ? 2 : -4,
+                            transform: [{ translateY: pressed ? 1 : 0 }],
+                            outlineWidth:
+                              pressed ||
+                              tab === t.name ||
+                              focusedControl === `side-${t.name}`
+                                ? 2
+                                : 0,
+                          })}
                         >
-                          <Icon
-                            name={t.icon}
-                            size={20}
-                            colour={tab === t.name ? c.accent : c.muted}
-                          />
+                          <Icon name={t.icon} size={20} colour={c.onAccent} />
                           <Text
                             style={{
                               fontSize: 14,
                               fontWeight: tab === t.name ? "700" : "500",
-                              color: c.ink,
+                              color: c.onAccent,
+                              textDecorationLine:
+                                tab === t.name ? "underline" : "none",
                             }}
                           >
                             {t.name}
@@ -308,8 +348,9 @@ export default function App() {
                   )}
                   <ScrollView
                     ref={scroll}
-                    style={{ flex: 1 }}
+                    style={{ flex: 1, backgroundColor: c.bg }}
                     contentContainerStyle={{
+                      backgroundColor: c.bg,
                       padding: wide ? 32 : 18,
                       paddingBottom: 40,
                     }}
@@ -356,26 +397,41 @@ export default function App() {
                         accessibilityRole="button"
                         accessibilityLabel={t.name}
                         accessibilityState={{ selected: tab === t.name }}
+                        aria-pressed={tab === t.name}
                         onPress={() => navigate(t.name)}
-                        style={{
+                        onFocus={() => setFocusedControl(`bottom-${t.name}`)}
+                        onBlur={() => setFocusedControl("")}
+                        style={({ pressed }) => ({
                           alignItems: "center",
                           gap: 5,
                           minWidth: 54,
                           padding: 7,
                           borderRadius: 11,
-                          backgroundColor: tab === t.name ? c.soft : undefined,
-                        }}
+                          backgroundColor: c.accent,
+                          outlineColor:
+                            focusedControl === `bottom-${t.name}`
+                              ? c.accent
+                              : c.onAccent,
+                          outlineStyle: "solid",
+                          outlineOffset:
+                            focusedControl === `bottom-${t.name}` ? 2 : -3,
+                          transform: [{ translateY: pressed ? 1 : 0 }],
+                          outlineWidth:
+                            pressed ||
+                            tab === t.name ||
+                            focusedControl === `bottom-${t.name}`
+                              ? 2
+                              : 0,
+                        })}
                       >
-                        <Icon
-                          name={t.icon}
-                          size={21}
-                          colour={tab === t.name ? c.accent : c.muted}
-                        />
+                        <Icon name={t.icon} size={21} colour={c.onAccent} />
                         <Text
                           style={{
                             fontSize: 10,
-                            fontWeight: "600",
-                            color: tab === t.name ? c.accent : c.muted,
+                            fontWeight: tab === t.name ? "700" : "600",
+                            color: c.onAccent,
+                            textDecorationLine:
+                              tab === t.name ? "underline" : "none",
                           }}
                         >
                           {t.name}
@@ -394,14 +450,16 @@ export default function App() {
                       right: 16,
                       bottom:
                         state.settings.onboardingComplete && !wide ? 85 : 20,
-                      backgroundColor: c.ink,
+                      backgroundColor: c.card,
                       borderRadius: 16,
                       padding: 18,
-                      shadowOpacity: 0.2,
-                      shadowRadius: 12,
+                      borderWidth: 1,
+                      borderColor: c.accent,
                     }}
                   >
-                    <Text style={{ color: c.bg, fontSize: 13, lineHeight: 20 }}>
+                    <Text
+                      style={{ color: c.ink, fontSize: 13, lineHeight: 20 }}
+                    >
                       {message}
                     </Text>
                   </Pressable>
