@@ -39,6 +39,7 @@ import {
 } from "./components";
 import { DatePickerField, DateTimePickerField } from "./DateTimePickers";
 import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
+import { snapshotTaskPlacement } from "./taskDraft";
 
 function MissingInputs({
   items,
@@ -298,17 +299,19 @@ export function PlanTimeline({
   state,
   plan,
   navigate,
+  showMissingInputs = true,
 }: {
   entry: RotaEntry;
   state: ScreenProps["state"];
   plan?: ShiftPlan;
   navigate?: (tab: string) => void;
+  showMissingInputs?: boolean;
 }) {
   const s = state.settings;
   const p = plan ?? planShift(entry, s, state.entries, state.tasks);
   return (
     <View style={ui.section}>
-      {p.missing.length > 0 && (
+      {showMissingInputs && p.missing.length > 0 && (
         <MissingInputs
           items={p.missing}
           onSettings={navigate ? () => navigate("Settings") : undefined}
@@ -421,20 +424,26 @@ function PreparationTimeline({
     deferred: "Deferred",
     planned: "Planned",
     "needs-input": "Needs input",
-    conflict: "Needs moving",
+    conflict: "Needs review",
   };
   return (
     <View style={ui.section}>
       {entry ? (
-        <Body>
-          {plan.preparesFor === "tomorrow"
-            ? "Preparation for tomorrow’s duty"
-            : plan.preparesFor === "today"
-              ? "Preparation for today’s duty"
-              : "Preparation for your next recorded duty"}
-          : {entry.duty || entry.category} ·{" "}
-          {displayDate(entry.date, s.dateFormat)}.
-        </Body>
+        <>
+          <Body style={{ fontWeight: "600" }}>
+            {plan.preparationDate
+              ? displayDate(plan.preparationDate, s.dateFormat)
+              : "Preparation date needed"}
+          </Body>
+          <Body muted style={{ fontSize: 12 }}>
+            The day before {entry.duty || entry.category} ·{" "}
+            {displayDate(entry.date, s.dateFormat)} ·{" "}
+            {entry.start
+              ? formatPickerTime(entry.start.slice(11, 16), s.clockFormat)
+              : "Start needed"}
+            .
+          </Body>
+        </>
       ) : (
         <>
           <Body>
@@ -447,12 +456,6 @@ function PreparationTimeline({
             onPress={() => navigate("Rota")}
           />
         </>
-      )}
-      {plan.missing.length > 0 && (
-        <MissingInputs
-          items={plan.missing}
-          onSettings={() => navigate("Settings")}
-        />
       )}
       {plan.conflicts.map((conflict) => (
         <Notice error key={conflict}>
@@ -559,6 +562,7 @@ export function Today({
   );
   const placements = preparation.placements;
   const checklistNext = preparation.nextShift;
+  const preparationTimezone = checklistNext?.timezone ?? s.timezone;
   const next = current ?? checklistNext;
   const todayEntries = state.entries.filter((e) => e.date === today);
   const restToday = !current && todayEntries.some((e) => e.status === "Rest");
@@ -569,7 +573,12 @@ export function Today({
     .filter(
       (t) =>
         t.kind === "essential" &&
-        (!t.linkedShiftId || t.linkedShiftId === checklistNext?.id),
+        (!t.linkedShiftId || t.linkedShiftId === checklistNext?.id) &&
+        (t.recurrence === "none" ||
+          !preparation.preparationDate ||
+          !["completed", "skipped"].includes(
+            t.occurrenceStates?.[preparation.preparationDate] ?? "pending",
+          )),
     )
     .slice(0, 4);
   const rowStyle = {
@@ -705,7 +714,12 @@ export function Today({
             </>
           ) : (
             prep.map((t) => {
-              const slot = placements.find((p) => p.taskId === t.id);
+              const slot = placements.find(
+                (p) =>
+                  p.taskId === t.id &&
+                  (t.recurrence === "none" ||
+                    p.occurrenceDate === preparation.preparationDate),
+              );
               const needsOccurrence =
                 t.recurrence !== "none" && !slot?.occurrenceDate;
               return (
@@ -727,7 +741,10 @@ export function Today({
                           ...a,
                           tasks: a.tasks.map((x) =>
                             x.id === t.id
-                              ? completePreparationTask(x, slot?.occurrenceDate)
+                              ? completePreparationTask(
+                                  snapshotTaskPlacement(x, slot, s.timezone),
+                                  slot?.occurrenceDate,
+                                )
                               : x,
                           ),
                         }));
@@ -770,7 +787,7 @@ export function Today({
                       <Body muted style={{ fontSize: 12 }}>
                         {t.minutes} min ·{" "}
                         {slot?.start
-                          ? `${displayDate(localAt(slot.start, s.timezone).slice(0, 10), s.dateFormat)} ${displayTime(slot.start, s.timezone, s.clockFormat)}`
+                          ? `${displayDate(localAt(slot.start, preparationTimezone).slice(0, 10), s.dateFormat)} ${displayTime(slot.start, preparationTimezone, s.clockFormat)}`
                           : "Needs a feasible slot"}
                       </Body>
                       {needsOccurrence && (
@@ -797,7 +814,23 @@ export function Today({
       <View style={rowStyle}>
         <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
           <Row style={{ justifyContent: "space-between" }}>
-            <Heading small>The plan around your next shift</Heading>
+            <Heading small>Shift transition</Heading>
+            <Icon name="shuffle" />
+          </Row>
+          <Pill
+            text={
+              checklistNext ? "Day-before preparation" : "Next shift needed"
+            }
+          />
+          <PreparationTimeline
+            plan={preparation}
+            state={state}
+            navigate={navigate}
+          />
+        </Card>
+        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+          <Row style={{ justifyContent: "space-between" }}>
+            <Heading small>Shift Plan</Heading>
             <Icon name="clock" />
           </Row>
           {checklistNext && preparation.shiftPlan ? (
@@ -806,6 +839,7 @@ export function Today({
               state={state}
               plan={preparation.shiftPlan}
               navigate={navigate}
+              showMissingInputs={false}
             />
           ) : (
             <>
@@ -820,26 +854,6 @@ export function Today({
               />
             </>
           )}
-        </Card>
-        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
-          <Row style={{ justifyContent: "space-between" }}>
-            <Heading small>Shift transition</Heading>
-            <Icon name="shuffle" />
-          </Row>
-          <Pill
-            text={
-              !checklistNext
-                ? "Next shift needed"
-                : preparation.provisional
-                  ? "Provisional"
-                  : "Planned opportunity"
-            }
-          />
-          <PreparationTimeline
-            plan={preparation}
-            state={state}
-            navigate={navigate}
-          />
         </Card>
       </View>
       <Card>

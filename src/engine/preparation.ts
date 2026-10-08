@@ -7,13 +7,10 @@ import {
   TaskState,
 } from "../model";
 import {
-  essentialPreparation,
   nextWork,
-  orderedPreparationRoutines,
   planShift,
   planTasks,
   preparationActivityKind,
-  routinePreparationKind,
   ShiftPlan,
   TaskPlacement,
   workBounds,
@@ -24,8 +21,54 @@ import {
   dateInZone,
   localAt,
   MINUTE,
+  onDate,
   zonedEpoch,
 } from "./time";
+
+export type PreparationActivity =
+  | "laundry"
+  | "ironing"
+  | "lunch"
+  | "packing"
+  | "haircut"
+  | "meal"
+  | "windDown"
+  | "shower"
+  | "sleep"
+  | "clothes"
+  | "shopping"
+  | "cooking"
+  | "exercise"
+  | "project";
+
+/** Recognise an activity, not a location, booking, or a combined routine. */
+export function recognizePreparationActivity(
+  title: string,
+): PreparationActivity | undefined {
+  const text = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (
+    /\b(?:shower|showering) (?:for|before) (?:bed|sleep)\b|^bedtime shower$/.test(
+      text,
+    )
+  )
+    return "shower";
+  if (/\bwind(?:ing)? down\b|^winddown$/.test(text)) return "windDown";
+  if (/^(?:go|going) to (?:sleep|bed)$|^bedtime$|^get to sleep$/.test(text))
+    return "sleep";
+  if (/\blast (?:meal|dinner)\b|\b(?:evening meal|dinner)\b/.test(text))
+    return "meal";
+  if (/\bhaircut\b|\bcut (?:my |your |their )?hair\b/.test(text))
+    return "haircut";
+  if (/\blay(?:ing)? out (?:work )?clothes\b/.test(text)) return "clothes";
+  if (/\b(?:grocery shopping|food shopping)\b/.test(text)) return "shopping";
+  if (/\bbatch cooking\b/.test(text)) return "cooking";
+  if (/^exercise$/.test(text)) return "exercise";
+  if (/^personal project$/.test(text)) return "project";
+  return preparationActivityKind(title);
+}
 
 export interface PreparationRow {
   id: string;
@@ -41,11 +84,11 @@ export interface PreparationRow {
   routineId?: string;
   conflict?: string;
 }
-
 export interface PreparationPlan {
   today: string;
   todayStatus: DayStatus;
   nextShift?: RotaEntry;
+  preparationDate?: string;
   shiftPlan?: ShiftPlan;
   preparesFor: "today" | "tomorrow" | "later" | "none";
   placements: TaskPlacement[];
@@ -70,7 +113,6 @@ export function completePreparationTask(
     },
   };
 }
-
 const unique = (values: string[]) => [...new Set(values)];
 const inactive = (state: TaskState) =>
   ["completed", "skipped", "deferred"].includes(state);
@@ -85,24 +127,95 @@ const safeEpoch = (
     return null;
   }
 };
+const intersects = (a: Interval, b: Interval) =>
+  a.start < b.end && b.start < a.end;
+interface Interval {
+  start: number;
+  end: number;
+  label: string;
+}
+/** A blank endpoint is neutral; the other entered endpoint still applies. */
+function taskWindow(task: Task, date: string, settings: Settings) {
+  const enteredStart =
+      !!task.windowStart && !task.omittedFields?.includes("windowStart"),
+    enteredEnd = !!task.windowEnd && !task.omittedFields?.includes("windowEnd");
+  let start = onDate(
+    date,
+    enteredStart ? task.windowStart : "00:00",
+    settings.timezone,
+  );
+  let end = onDate(
+    date,
+    enteredEnd ? task.windowEnd : "00:00",
+    settings.timezone,
+  );
+  if (!enteredEnd || end <= start)
+    end = onDate(
+      addDays(date, 1),
+      enteredEnd ? task.windowEnd : "00:00",
+      settings.timezone,
+    );
+  return { start, end };
+}
+function latestStart(
+  upper: number,
+  minutes: number,
+  travel: number,
+  lower: number,
+  busy: Interval[],
+) {
+  let stop = upper;
+  for (let attempts = 0; attempts <= busy.length; attempts++) {
+    const occupiedStart = stop - (minutes + travel) * MINUTE;
+    if (occupiedStart < lower) return null;
+    const clashes = busy.filter((b) =>
+      intersects(b, { start: occupiedStart, end: stop, label: "activity" }),
+    );
+    if (!clashes.length) return occupiedStart + travel * MINUTE;
+    stop = Math.min(...clashes.map((b) => b.start));
+  }
+  return null;
+}
+const bedtimeActivity = (task: Task) =>
+  ["windDown", "shower", "sleep"].includes(
+    recognizePreparationActivity(task.title) ?? "",
+  );
+const fixedTask = (task: Task) =>
+  task.kind === "fixed" || task.locked || !task.movable;
+const occurrenceOn = (task: Task, date: string, timezone: string) => {
+  if (task.recurrence === "none") return undefined;
+  const first = task.earliest.slice(0, 10),
+    last = task.deadline.slice(0, 10);
+  const day = localAt(onDate(date, "12:00", timezone), timezone).slice(0, 10);
+  if (
+    day < first ||
+    day > last ||
+    (task.recurrence === "weekly" && calendarDaysBetween(first, day) % 7 !== 0)
+  )
+    return null;
+  return day;
+};
 
-/** A view of existing plans, never a task generator or a persisted timetable. */
+/** Day-before preparation is derived without changing saved tasks or Shift Plan. */
 export function planPreparation(
   entries: RotaEntry[],
   tasks: Task[],
   settings: Settings,
   clock: Clock,
-  shared: { shiftPlan?: ShiftPlan; placements?: TaskPlacement[] } = {},
+  shared: {
+    shiftPlan?: ShiftPlan;
+    placements?: TaskPlacement[];
+    selectedShift?: RotaEntry;
+  } = {},
 ): PreparationPlan {
   const now = clock.now(),
-    snapshotClock = { now: () => now };
-  const today = dateInZone(snapshotClock, settings.timezone);
+    snapshotClock = { now: () => now },
+    today = dateInZone(snapshotClock, settings.timezone);
   const todayEntries = entries.filter((e) => e.date === today);
-  // An overnight duty still in progress takes precedence over a same-date Rest.
   const working = entries.some((entry) => {
     try {
-      const bounds = workBounds(entry);
-      return !!bounds && bounds.start <= now && bounds.end > now;
+      const b = workBounds(entry);
+      return !!b && b.start <= now && b.end > now;
     } catch {
       return false;
     }
@@ -121,36 +234,38 @@ export function planPreparation(
     conflicts: [],
     provisional: false,
   };
-  let next = nextWork(entries, snapshotClock, settings.timezone);
-  const invalidUpcoming = entries.filter(
-    (entry) =>
-      entry.status === "Work" &&
-      entry.date >= today &&
-      (!next || entry.date <= next.date) &&
-      safeEpoch(entry.start, entry.timezone, entry.disambiguation) === null,
-  );
+  let next =
+    shared.selectedShift ?? nextWork(entries, snapshotClock, settings.timezone);
+  const invalidUpcoming = shared.selectedShift
+    ? []
+    : entries.filter(
+        (entry) =>
+          entry.status === "Work" &&
+          entry.date >= today &&
+          (!next || entry.date <= next.date) &&
+          safeEpoch(entry.start, entry.timezone, entry.disambiguation) === null,
+      );
   for (const entry of invalidUpcoming)
     result.missing.push(
       `Review the recorded work start on ${entry.date}; a valid time and timezone are needed to identify your next shift.`,
     );
-  // An earlier incomplete Work record makes the identity of the next duty uncertain.
   if (invalidUpcoming.length) next = undefined;
   if (!next) {
     result.provisional = result.missing.length > 0;
     return result;
   }
+  const nextStart = safeEpoch(next.start, next.timezone, next.disambiguation);
+  if (nextStart === null) {
+    result.missing.push(
+      "Review the selected shift start before scheduling its preparation.",
+    );
+    result.provisional = true;
+    return result;
+  }
   result.nextShift = next;
-  const plan =
-    shared.shiftPlan?.entryId === next.id
-      ? shared.shiftPlan
-      : planShift(next, settings, entries, tasks);
-  result.shiftPlan = plan;
-  result.missing.push(...plan.missing);
-  result.conflicts.push(...plan.conflicts);
-  const nextDate = localAt(
-    zonedEpoch(next.start!, next.timezone, next.disambiguation),
-    next.timezone,
-  ).slice(0, 10);
+  const nextDate = localAt(nextStart, next.timezone).slice(0, 10),
+    preparationDate = addDays(nextDate, -1);
+  result.preparationDate = preparationDate;
   const localToday = dateInZone(snapshotClock, next.timezone);
   result.preparesFor =
     nextDate === localToday
@@ -158,248 +273,792 @@ export function planPreparation(
       : nextDate === addDays(localToday, 1)
         ? "tomorrow"
         : "later";
+  const plan =
+    shared.shiftPlan?.entryId === next.id
+      ? shared.shiftPlan
+      : planShift(next, settings, entries, tasks);
+  result.shiftPlan = plan;
+  result.missing.push(...plan.missing);
   const event = (kind: string) => plan.events.find((e) => e.kind === kind);
-  const cutoff = event("departure")?.at ?? event("workStart")?.at;
-  if (cutoff === undefined) {
-    result.provisional = true;
-    return result;
-  }
-  const selected = [...new Map(tasks.map((task) => [task.id, task])).values()];
+  const dayStart = onDate(preparationDate, "00:00", next.timezone),
+    dayEnd = onDate(nextDate, "00:00", next.timezone);
+  // Keep a historical day-before view when today's duty is the selected duty.
+  const schedulerClock: Clock = { now: () => Math.min(now, dayStart) };
   const horizon = Math.max(
     14,
     calendarDaysBetween(
-      today,
-      localAt(cutoff, settings.timezone).slice(0, 10),
-    ) + 1,
+      dateInZone(schedulerClock, settings.timezone),
+      nextDate,
+    ) + 2,
   );
-  const placements =
-    horizon > 14 || !shared.placements
-      ? planTasks(tasks, entries, settings, snapshotClock, horizon)
-      : shared.placements;
-  result.placements = placements;
-  const linkedElsewhere = (task: Task) =>
-    !!task.linkedShiftId && task.linkedShiftId !== next!.id;
-  const relevant = (task: Task) => {
-    if (linkedElsewhere(task)) return false;
-    if (task.linkedShiftId === next!.id) return true;
-    const earliest = safeEpoch(task.earliest, settings.timezone),
-      deadline = safeEpoch(task.deadline, settings.timezone);
-    const due =
-      deadline !== null &&
-      deadline >= now - 24 * 60 * MINUTE &&
-      deadline <= cutoff;
-    const placed = placements.some(
-      (p) =>
-        p.taskId === task.id &&
-        p.start !== null &&
-        p.start < cutoff &&
-        p.end! > now,
+  const selected = [...new Map(tasks.map((task) => [task.id, task])).values()];
+  const originalPlacements =
+    shared.placements ??
+    planTasks(tasks, entries, settings, schedulerClock, horizon);
+  const relevant = selected.filter((task) => {
+    if (task.linkedShiftId) return task.linkedShiftId === next!.id;
+    const chosen = safeEpoch(
+      task.scheduledStart ?? task.earliest,
+      settings.timezone,
     );
+    const due = safeEpoch(task.deadline, settings.timezone);
     return (
-      due ||
-      placed ||
-      (earliest !== null &&
-        earliest <= cutoff &&
-        task.kind === "essential" &&
-        deadline !== null &&
-        deadline <= cutoff)
-    );
-  };
-  const appendTask = (
-    task: Task,
-    placement: TaskPlacement | undefined,
-    occurrenceDate?: string,
-    state = task.state,
-  ) => {
-    const key = `task:${task.id}:${occurrenceDate ?? "once"}`;
-    if (
-      result.rows.some(
-        (row) => row.id === key || row.id.startsWith(`${key}:part:`),
+      (chosen !== null && chosen >= dayStart && chosen < dayEnd) ||
+      (due !== null && due > dayStart && due <= dayEnd) ||
+      originalPlacements.some(
+        (p) =>
+          p.taskId === task.id &&
+          p.start !== null &&
+          p.start >= dayStart &&
+          p.start < dayEnd,
       )
-    )
-      return;
-    if (inactive(state)) {
-      result.rows.push({
-        id: key,
-        label: task.title,
-        kind: "task",
-        at: null,
-        end: null,
-        minutes: task.minutes,
-        status: state,
-        why: `Saved as ${state}; this activity has not been rescheduled.`,
-        taskId: task.id,
-        ...(occurrenceDate ? { occurrenceDate } : {}),
-      });
-      return;
+    );
+  });
+  const occurrences = relevant.flatMap((task) => {
+    const occurrenceDate = occurrenceOn(
+      task,
+      localAt(dayStart + 12 * 60 * MINUTE, settings.timezone).slice(0, 10),
+      settings.timezone,
+    );
+    return occurrenceDate === null
+      ? []
+      : [
+          {
+            task,
+            occurrenceDate,
+            state: occurrenceDate
+              ? (task.occurrenceStates?.[occurrenceDate] ?? task.state)
+              : task.state,
+          },
+        ];
+  });
+  const routineTasks = occurrences.filter(({ task }) => bedtimeActivity(task));
+  const ordinaryTasks = occurrences.filter(
+    ({ task }) => !bedtimeActivity(task),
+  );
+  const bedtime = event("bedtime")?.at,
+    windStart = event("windDown")?.at,
+    sleepStart = event("sleepStart")?.at;
+  const blocked: Interval[] = [];
+  const availabilityIssues: string[] =
+    next.timezone !== settings.timezone
+      ? [
+          `The selected shift uses ${next.timezone}, while task times and routine preferences use ${settings.timezone}. Review these timezones before relying on the preparation schedule; its previous calendar day is anchored in the selected shift's timezone.`,
+        ]
+      : [];
+  const block = (start: number, end: number, label: string) => {
+    if (end > start) blocked.push({ start, end, label });
+  };
+  for (const entry of entries) {
+    try {
+      const bounds = workBounds(entry);
+      if (!bounds) {
+        if (
+          entry.status === "Work" &&
+          (entry.date === preparationDate ||
+            addDays(entry.date, 1) === preparationDate)
+        )
+          availabilityIssues.push(
+            `Review the work start and finish on ${entry.date}; this preparation day's availability cannot be confirmed.`,
+          );
+        continue;
+      }
+      const p =
+        entry.id === next.id
+          ? plan
+          : planShift(entry, settings, entries, tasks);
+      const prep =
+        p.events.find((e) => e.kind === "prepare")?.at ??
+        p.events.find((e) => e.kind === "departure")?.at ??
+        bounds.start;
+      block(
+        prep,
+        bounds.end +
+          ((settings.returnMinutes ?? 0) + (settings.postWorkMinutes ?? 0)) *
+            MINUTE,
+        `work, travel and recovery (${entry.duty || entry.date})`,
+      );
+      if (entry.id !== next.id) {
+        const start =
+            p.events.find((e) => e.kind === "windDown")?.at ??
+            p.events.find((e) => e.kind === "bedtime")?.at,
+          wake = p.events.find((e) => e.kind === "wake")?.at;
+        if (start !== undefined && wake !== undefined)
+          block(start, wake, "another duty's protected sleep and wind-down");
+        if (
+          (entry.category === "Late" ||
+            entry.category === "Night" ||
+            localAt(bounds.end, entry.timezone).slice(0, 10) > entry.date) &&
+          [
+            settings.returnMinutes,
+            settings.postWorkMinutes,
+            settings.windDown,
+            settings.latency,
+            settings.sleepTarget,
+          ].every((n) => n !== null && Number.isFinite(n) && n >= 0)
+        ) {
+          // Protect recovery after an overnight/late duty as well as the sleep
+          // before it. This mirrors the existing task planner's full target.
+          let recoveryBed =
+            bounds.end +
+            (settings.returnMinutes! +
+              settings.postWorkMinutes! +
+              settings.windDown!) *
+              MINUTE;
+          if (entry.category === "Late" && settings.lateBed) {
+            let preferred = onDate(
+              localAt(bounds.end, entry.timezone).slice(0, 10),
+              settings.lateBed,
+              entry.timezone,
+            );
+            if (preferred < bounds.end)
+              preferred = onDate(
+                addDays(localAt(bounds.end, entry.timezone).slice(0, 10), 1),
+                settings.lateBed,
+                entry.timezone,
+              );
+            recoveryBed = Math.max(recoveryBed, preferred);
+          }
+          let recoveryEnd =
+            recoveryBed + (settings.latency! + settings.sleepTarget!) * MINUTE;
+          if (entry.category === "Late" && settings.lateWake)
+            recoveryEnd = Math.max(
+              recoveryEnd,
+              onDate(
+                localAt(recoveryEnd, entry.timezone).slice(0, 10),
+                settings.lateWake,
+                entry.timezone,
+              ),
+            );
+          block(
+            recoveryBed - settings.windDown! * MINUTE,
+            recoveryEnd,
+            "post-duty recovery and full sleep target",
+          );
+        }
+      }
+    } catch {
+      if (
+        entry.status === "Work" &&
+        (entry.date === preparationDate ||
+          addDays(entry.date, 1) === preparationDate)
+      )
+        availabilityIssues.push(
+          `Review the invalid work start or finish on ${entry.date}; this preparation day's availability cannot be confirmed.`,
+        );
     }
+  }
+  const previousDayEntries = entries.filter((e) => e.date === preparationDate);
+  if (
+    previousDayEntries.some((e) => e.status === "Rest") &&
+    settings.freeMinutes !== null &&
+    Number.isFinite(settings.freeMinutes) &&
+    settings.freeMinutes > 0
+  ) {
+    const free = onDate(preparationDate, "16:00", next.timezone);
+    block(
+      free,
+      free + settings.freeMinutes * MINUTE,
+      "protected rest-day personal time",
+    );
+  }
+  if (
+    !previousDayEntries.some((e) => e.status === "Work") &&
+    settings.restWake &&
+    settings.restBed &&
+    settings.sleepTarget !== null &&
+    settings.latency !== null &&
+    settings.windDown !== null
+  ) {
+    try {
+      const wake = onDate(preparationDate, settings.restWake, next.timezone);
+      let restBed = onDate(preparationDate, settings.restBed, next.timezone);
+      if (restBed >= wake)
+        restBed = onDate(
+          addDays(preparationDate, -1),
+          settings.restBed,
+          next.timezone,
+        );
+      const requiredBed =
+        wake - (settings.sleepTarget + settings.latency) * MINUTE;
+      block(
+        Math.min(restBed, requiredBed) - settings.windDown * MINUTE,
+        wake,
+        "previous-day rest sleep and wind-down",
+      );
+    } catch {
+      /* Invalid rest preferences are already surfaced by the task planner. */
+    }
+  }
+  for (const task of selected.filter(
+    (t) => fixedTask(t) && !bedtimeActivity(t) && !inactive(t.state),
+  )) {
+    const occurrence = occurrenceOn(
+      task,
+      localAt(dayStart + 12 * 60 * MINUTE, settings.timezone).slice(0, 10),
+      settings.timezone,
+    );
+    if (occurrence === null) continue;
+    const raw = task.scheduledStart ?? task.earliest,
+      chosen = safeEpoch(
+        occurrence ? `${occurrence}T${raw.slice(11, 16)}` : raw,
+        settings.timezone,
+      );
+    if (chosen !== null)
+      block(
+        chosen - task.travelMinutes * MINUTE,
+        chosen + task.minutes * MINUTE,
+        `fixed commitment: ${task.title}`,
+      );
+  }
+  const rowPlacements: TaskPlacement[] = [];
+  const append = (
+    task: Task,
+    p: TaskPlacement | undefined,
+    state: TaskState,
+    occurrenceDate?: string,
+  ) => {
     const parts =
-      placement?.parts ??
-      (placement?.start !== null &&
-      placement?.start !== undefined &&
-      placement.end !== null
-        ? [{ start: placement.start, end: placement.end }]
+      p?.parts ??
+      (p?.start !== null && p?.start !== undefined && p.end !== null
+        ? [{ start: p.start, end: p.end }]
         : []);
     if (!parts.length) {
-      const why =
-        placement?.reason ??
-        "Enter or review this saved activity's timing before it can be placed safely.";
       result.rows.push({
-        id: key,
+        id: `task:${task.id}:${occurrenceDate ?? "once"}`,
         label: task.title,
         kind: "task",
         at: null,
         end: null,
         minutes: task.minutes,
-        status: "needs-input",
-        why,
+        status: inactive(state)
+          ? state
+          : p?.conflict
+            ? "conflict"
+            : "needs-input",
+        why:
+          p?.reason ??
+          `Saved as ${state}; no scheduled time has been recorded.`,
         taskId: task.id,
         ...(occurrenceDate ? { occurrenceDate } : {}),
+        ...(p?.conflict ? { conflict: p.conflict } : {}),
       });
-      if (/^(?:Enter|Review|Plan remains provisional)/.test(why))
-        result.missing.push(`“${task.title}”: ${why}`);
-      else result.conflicts.push(`“${task.title}”: ${why}`);
+      if (!inactive(state)) {
+        const reason = p?.reason ?? "Choose a preparation time.";
+        if (/^(?:Enter|Review|Plan remains provisional|A valid)/.test(reason))
+          result.missing.push(`“${task.title}”: ${reason}`);
+        else result.conflicts.push(`“${task.title}”: ${reason}`);
+      }
       return;
     }
-    parts.forEach((part, i) => {
+    for (const [i, part] of parts.entries()) {
+      const wrongDate =
+        localAt(part.start, next!.timezone).slice(0, 10) !== preparationDate;
+      const conflict = unique([
+        ...(p?.conflict ? [p.conflict] : []),
+        ...(wrongDate
+          ? [
+              `This saved time is outside ${preparationDate}, the calendar day before the selected shift. Review its date; fixed appointments have not been moved.`,
+            ]
+          : []),
+      ]).join(" ");
+      if (conflict && p) p.conflict = conflict;
       result.rows.push({
-        id: parts.length === 1 ? key : `${key}:part:${i}`,
+        id: `task:${task.id}:${occurrenceDate ?? "once"}${parts.length > 1 ? `:part:${i}` : ""}`,
         label: task.title,
-        kind: "task",
+        kind:
+          recognizePreparationActivity(task.title) === "windDown"
+            ? "windDown"
+            : recognizePreparationActivity(task.title) === "sleep"
+              ? "bedtime"
+              : "task",
         at: part.start,
         end: part.end,
         minutes: (part.end - part.start) / MINUTE,
-        status: placement?.conflict ? "conflict" : state,
-        why: `${placement!.reason}${task.travelMinutes > 0 ? ` ${task.travelMinutes} minutes of entered travel are reserved before this activity.` : ""}`,
+        status: inactive(state) ? state : conflict ? "conflict" : state,
+        why: `${p!.reason}${task.travelMinutes > 0 ? ` ${task.travelMinutes} minutes of entered travel are reserved before this activity.` : ""}`,
         taskId: task.id,
         ...(occurrenceDate ? { occurrenceDate } : {}),
-        ...(placement?.conflict ? { conflict: placement.conflict } : {}),
+        ...(conflict ? { conflict } : {}),
       });
-    });
-    if (placement?.conflict)
-      result.conflicts.push(`“${task.title}”: ${placement.conflict}`);
+      if (conflict && !inactive(state))
+        result.conflicts.push(`“${task.title}”: ${conflict}`);
+    }
   };
-  for (const task of selected.filter(relevant)) {
-    if (task.recurrence === "none" || inactive(task.state)) {
-      appendTask(
-        task,
-        placements.find((p) => p.taskId === task.id),
-      );
+  const chosenFor = (task: Task, occurrenceDate?: string) => {
+    const raw = task.scheduledStart ?? task.earliest;
+    return safeEpoch(
+      occurrenceDate ? `${occurrenceDate}T${raw.slice(11, 16)}` : raw,
+      settings.timezone,
+    );
+  };
+  // A selected routine replaces its generated stage. A shower belongs before
+  // wind-down, so it never silently shortens the entered wind-down or sleep.
+  const routineOrder = [...routineTasks].sort(
+    (a, b) =>
+      ({ sleep: 0, windDown: 1, shower: 2 })[
+        recognizePreparationActivity(a.task.title) as
+          "sleep" | "windDown" | "shower"
+      ] -
+        { sleep: 0, windDown: 1, shower: 2 }[
+          recognizePreparationActivity(b.task.title) as
+            "sleep" | "windDown" | "shower"
+        ] || a.task.id.localeCompare(b.task.id),
+  );
+  let routineCutoff = windStart ?? bedtime ?? dayEnd;
+  for (const { task, occurrenceDate, state } of routineOrder) {
+    const kind = recognizePreparationActivity(task.title)!;
+    const preferred =
+      kind === "sleep"
+        ? bedtime
+        : kind === "windDown"
+          ? task.preparationAutoStart && bedtime !== undefined
+            ? bedtime - task.minutes * MINUTE
+            : windStart
+          : routineCutoff - task.minutes * MINUTE;
+    let start =
+      (task.scheduledStart &&
+        (!task.preparationAutoStart || inactive(state))) ||
+      fixedTask(task)
+        ? chosenFor(task, occurrenceDate)
+        : (preferred ?? null);
+    if (inactive(state) && !task.scheduledStart && !fixedTask(task)) {
+      append(task, undefined, state, occurrenceDate);
       continue;
     }
-    for (const placement of placements.filter(
-      (p) =>
-        p.taskId === task.id &&
-        (!p.occurrenceDate ||
-          (p.occurrenceDate >= today &&
-            p.occurrenceDate <=
-              localAt(cutoff, settings.timezone).slice(0, 10))) &&
-        (p.start === null || p.start < cutoff),
-    ))
-      appendTask(
-        task,
-        placement,
-        placement.occurrenceDate,
-        task.occurrenceStates?.[placement.occurrenceDate ?? ""] ?? task.state,
+    const conflicts: string[] = [...availabilityIssues];
+    if (
+      task.preparationAutoStart &&
+      !fixedTask(task) &&
+      !inactive(state) &&
+      kind === "shower" &&
+      start !== null
+    ) {
+      try {
+        const window = taskWindow(
+          task,
+          localAt(dayStart + 12 * 60 * MINUTE, settings.timezone).slice(0, 10),
+          settings,
+        );
+        const deadline = safeEpoch(task.deadline, settings.timezone);
+        start = latestStart(
+          Math.min(routineCutoff, deadline ?? routineCutoff, window.end),
+          task.minutes,
+          task.travelMinutes,
+          Math.max(
+            dayStart,
+            window.start,
+            now >= dayStart && now < dayEnd ? now : dayStart,
+          ),
+          blocked,
+        );
+      } catch {
+        start = null;
+      }
+    }
+    if (
+      !previousDayEntries.length ||
+      previousDayEntries.some((e) => e.status === "Unknown")
+    )
+      conflicts.push(
+        "Availability on the preparation day is not confirmed in the rota; review it before relying on this time.",
       );
-    for (const [date, state] of Object.entries(task.occurrenceStates ?? {})) {
-      if (
-        date >= today &&
-        date <= localAt(cutoff, settings.timezone).slice(0, 10) &&
-        inactive(state)
+    if (
+      previousDayEntries.some(
+        (e) => e.status === "Holiday" && e.leaveApproval !== "confirmed",
       )
-        appendTask(task, undefined, date, state);
+    )
+      conflicts.push(
+        "The preparation day's holiday is not confirmed availability; the fixed rota has not been changed.",
+      );
+    if (
+      !Number.isFinite(task.minutes) ||
+      task.minutes <= 0 ||
+      !Number.isFinite(task.travelMinutes) ||
+      task.travelMinutes < 0
+    )
+      start = null;
+    if (bedtime === undefined || windStart === undefined) start = null;
+    if (start === null) {
+      const reason =
+        bedtime !== undefined &&
+        windStart !== undefined &&
+        task.minutes > 0 &&
+        Number.isFinite(task.minutes)
+          ? "No permitted previous-day bedtime slot fits around work, travel, fixed commitments and protected sleep; move or edit this activity."
+          : "A valid duration, wake time and planned bedtime are needed before this bedtime activity can be scheduled.";
+      const p: TaskPlacement = {
+        taskId: task.id,
+        start: null,
+        end: null,
+        reason,
+        ...(conflicts.length || reason.startsWith("No permitted")
+          ? {
+              conflict: unique([
+                ...conflicts,
+                ...(reason.startsWith("No permitted") ? [reason] : []),
+              ]).join(" "),
+            }
+          : {}),
+        ...(occurrenceDate ? { occurrenceDate } : {}),
+      };
+      rowPlacements.push(p);
+      append(task, p, state, occurrenceDate);
+      continue;
+    }
+    const end = start + task.minutes * MINUTE,
+      interval = {
+        start: start - task.travelMinutes * MINUTE,
+        end,
+        label: task.title,
+      };
+    if (
+      task.preparationAutoStart &&
+      !inactive(state) &&
+      now >= dayStart &&
+      now < dayEnd &&
+      start < now
+    )
+      conflicts.push(
+        "This planned start has passed; mark the activity complete or review its time before relying on it.",
+      );
+    if (kind === "sleep" && start !== bedtime)
+      conflicts.push(
+        "This saved bedtime differs from the calculated bedtime; the existing Shift Plan sleep opportunity is unchanged.",
+      );
+    if (kind === "sleep" && sleepStart !== undefined && end > sleepStart)
+      conflicts.push(
+        "This bedtime activity extends into the protected planned sleep opportunity; shorten the activity or review the entered sleep latency.",
+      );
+    if (kind === "windDown" && end > bedtime!)
+      conflicts.push(
+        "Wind-down must finish by the calculated bedtime; it cannot shorten the protected sleep opportunity.",
+      );
+    if (kind === "shower" && end > routineCutoff)
+      conflicts.push(
+        "This shower overlaps the wind-down or bedtime routine; move it earlier or edit the routine.",
+      );
+    const earliest = safeEpoch(task.earliest, settings.timezone),
+      deadline = safeEpoch(task.deadline, settings.timezone);
+    if (earliest !== null && start < earliest && !task.preparationAutoStart)
+      conflicts.push("The saved start precedes the entered earliest time.");
+    if (
+      deadline !== null &&
+      end > deadline &&
+      !task.omittedFields?.includes("deadline")
+    )
+      conflicts.push("The activity finishes after its entered deadline.");
+    if (task.windowStart || task.windowEnd) {
+      try {
+        const window = taskWindow(
+          task,
+          localAt(start, settings.timezone).slice(0, 10),
+          settings,
+        );
+        if (start < window.start || end > window.end)
+          conflicts.push("This saved time is outside the preferred window.");
+      } catch {
+        conflicts.push(
+          "Review the preferred window or daylight-saving choice.",
+        );
+      }
+    }
+    if (!inactive(state))
+      conflicts.push(
+        ...blocked
+          .filter((b) => intersects(b, interval))
+          .map((b) => `Overlaps ${b.label}.`),
+      );
+    const p: TaskPlacement = {
+      taskId: task.id,
+      start,
+      end,
+      reason: `${fixedTask(task) ? "Fixed or locked time retained." : "Saved editable preparation time retained."} ${kind === "shower" ? "Shower before wind-down; its duration is additional to the protected wind-down." : kind === "windDown" ? "Wind-down is calculated backwards from bedtime using your sleep and wake settings." : "Going to bed starts the bedtime routine; planned sleep duration and wake time remain in Shift Plan."}`,
+      ...(occurrenceDate ? { occurrenceDate } : {}),
+      ...(conflicts.length ? { conflict: unique(conflicts).join(" ") } : {}),
+    };
+    rowPlacements.push(p);
+    append(task, p, state, occurrenceDate);
+    if (!inactive(state)) {
+      block(interval.start, interval.end, `bedtime activity: ${task.title}`);
+      if (kind !== "sleep") routineCutoff = Math.min(routineCutoff, start);
     }
   }
-  const addEvent = (kind: string, label: string, endKind?: string) => {
-    const start = event(kind),
-      end = endKind ? (event(endKind)?.at ?? null) : null;
-    if (!start) return;
+  const normalCandidates = selected
+    .filter((t) => !bedtimeActivity(t))
+    .map((task) => {
+      if (!ordinaryTasks.some((o) => o.task.id === task.id) || fixedTask(task))
+        return task;
+      const start = safeEpoch(task.earliest, settings.timezone),
+        deadline = safeEpoch(task.deadline, settings.timezone),
+        preferred = safeEpoch(task.scheduledStart, settings.timezone);
+      if (start === null || deadline === null) return task;
+      const auto = task.preparationAutoStart && !inactive(task.state);
+      const automaticLower =
+        now >= dayStart && now < dayEnd ? Math.max(dayStart, now) : dayStart;
+      return {
+        ...task,
+        ...(auto ? { scheduledStart: null } : {}),
+        ...(task.preparationAutoStart === false &&
+        task.scheduledStart &&
+        task.linkedShiftId === next!.id
+          ? { locked: true, movable: false }
+          : {}),
+        earliest: localAt(
+          auto ? automaticLower : Math.max(start, dayStart, preferred ?? start),
+          settings.timezone,
+        ),
+        deadline: localAt(
+          Math.min(deadline, dayEnd - MINUTE, routineCutoff),
+          settings.timezone,
+        ),
+      };
+    });
+  const automaticMeals = ordinaryTasks.filter(
+    ({ task, state }) =>
+      task.preparationAutoStart &&
+      !fixedTask(task) &&
+      !inactive(state) &&
+      recognizePreparationActivity(task.title) === "meal",
+  );
+  const normalPlacements = planTasks(
+    normalCandidates.filter(
+      (t) => !automaticMeals.some((m) => m.task.id === t.id),
+    ),
+    entries,
+    settings,
+    schedulerClock,
+    horizon,
+  );
+  const mealBusy: Interval[] = [
+    ...blocked,
+    ...normalPlacements.flatMap((p) =>
+      (
+        p.parts ??
+        (p.start !== null && p.end !== null
+          ? [{ start: p.start, end: p.end }]
+          : [])
+      ).map((part) => ({
+        start:
+          part.start -
+          (selected.find((t) => t.id === p.taskId)?.travelMinutes ?? 0) *
+            MINUTE,
+        end: part.end,
+        label: "scheduled activity",
+      })),
+    ),
+  ];
+  for (const { task, occurrenceDate } of automaticMeals) {
+    let p: TaskPlacement;
+    try {
+      const window = taskWindow(
+          task,
+          localAt(dayStart + 12 * 60 * MINUTE, settings.timezone).slice(0, 10),
+          settings,
+        ),
+        deadline = safeEpoch(task.deadline, settings.timezone);
+      const upper = Math.min(
+          routineCutoff,
+          dayEnd - MINUTE,
+          deadline ?? dayEnd,
+          window.end,
+        ),
+        lower = Math.max(
+          dayStart,
+          window.start,
+          now >= dayStart && now < dayEnd ? now : dayStart,
+        );
+      const chosen = latestStart(
+        upper,
+        task.minutes,
+        task.travelMinutes,
+        lower,
+        mealBusy,
+      );
+      if (chosen === null)
+        p = {
+          taskId: task.id,
+          start: null,
+          end: null,
+          reason:
+            "No permitted previous-day meal slot fits before the bedtime routine without overlapping work, travel or commitments.",
+        };
+      else {
+        const trial: Task = {
+          ...task,
+          earliest: localAt(chosen, settings.timezone),
+          deadline: localAt(upper, settings.timezone),
+          scheduledStart: null,
+          recurrence: "none",
+        };
+        p = planTasks(
+          [
+            ...normalCandidates.filter(
+              (t) =>
+                t.id !== task.id &&
+                !automaticMeals.some((m) => m.task.id === t.id),
+            ),
+            trial,
+          ],
+          entries,
+          settings,
+          schedulerClock,
+          horizon,
+        ).find((p) => p.taskId === task.id) ?? {
+          taskId: task.id,
+          start: null,
+          end: null,
+          reason: "Review this meal's date, window and duration.",
+        };
+        if (p.start !== null && p.end !== null) {
+          p.reason =
+            "Automatically placed in the latest permitted space before shower, wind-down and bedtime. Your entered duration and optional bounds are preserved.";
+          mealBusy.push({
+            start: p.start - task.travelMinutes * MINUTE,
+            end: p.end,
+            label: task.title,
+          });
+        }
+      }
+    } catch {
+      p = {
+        taskId: task.id,
+        start: null,
+        end: null,
+        reason: "Review the meal's preferred window or daylight-saving choice.",
+      };
+    }
+    normalPlacements.push({
+      ...p,
+      ...(occurrenceDate ? { occurrenceDate } : {}),
+    });
+  }
+  for (const { task, occurrenceDate, state } of ordinaryTasks) {
+    let p = normalPlacements.find(
+      (p) =>
+        p.taskId === task.id &&
+        (!occurrenceDate || p.occurrenceDate === occurrenceDate),
+    );
+    if (
+      p?.start !== null &&
+      p?.start !== undefined &&
+      p.end !== null &&
+      !inactive(state)
+    ) {
+      const routineClashes = blocked
+        .filter(
+          (b) =>
+            b.label.startsWith("bedtime activity:") &&
+            intersects(b, {
+              start: p!.start! - task.travelMinutes * MINUTE,
+              end: p!.end!,
+              label: task.title,
+            }),
+        )
+        .map((b) => `Overlaps ${b.label}.`);
+      const issues = unique([
+        ...(p.conflict ? [p.conflict] : []),
+        ...routineClashes,
+        ...availabilityIssues,
+      ]);
+      if (issues.length) p.conflict = issues.join(" ");
+      if (
+        task.preparationAutoStart === false &&
+        task.scheduledStart &&
+        !fixedTask(task)
+      )
+        p.reason =
+          "Your explicitly chosen preparation start is retained; review any flagged conflicts before relying on this activity.";
+    }
+    if (inactive(state)) {
+      const chosen =
+        task.scheduledStart || fixedTask(task)
+          ? chosenFor(task, occurrenceDate)
+          : null;
+      p =
+        chosen !== null
+          ? {
+              taskId: task.id,
+              start: chosen,
+              end: chosen + task.minutes * MINUTE,
+              reason: `Saved as ${state}; its recorded time is retained.`,
+              ...(occurrenceDate ? { occurrenceDate } : {}),
+            }
+          : undefined;
+    }
+    if (p) rowPlacements.push(p);
+    append(task, p, state, occurrenceDate);
+  }
+  const addStage = (
+    kind: string,
+    label: string,
+    start: number | undefined,
+    end: number | undefined,
+  ) => {
+    if (
+      start === undefined ||
+      localAt(start, next!.timezone).slice(0, 10) !== preparationDate
+    )
+      return;
+    if (
+      routineTasks.some(
+        (o) =>
+          recognizePreparationActivity(o.task.title) ===
+          (kind === "windDown" ? "windDown" : "sleep"),
+      )
+    )
+      return;
+    const conflict = [
+      ...availabilityIssues,
+      ...(now >= dayStart && now < dayEnd && start < now
+        ? [
+            "This planned routine start has passed; review the routine before relying on the remaining preparation time.",
+          ]
+        : []),
+      ...blocked
+        .filter(
+          (b) =>
+            !b.label.startsWith("bedtime activity:") &&
+            intersects(b, { start, end: end ?? start, label }),
+        )
+        .map((b) => `Overlaps ${b.label}.`),
+    ].join(" ");
     result.rows.push({
       id: `event:${next!.id}:${kind}`,
       label,
       kind,
-      at: start.at,
-      end,
-      minutes: end !== null ? Math.max(0, (end - start.at) / MINUTE) : null,
-      status: "planned",
-      why: start.why,
+      at: start,
+      end: end ?? null,
+      minutes: end !== undefined ? Math.max(0, (end - start) / MINUTE) : null,
+      status: conflict ? "conflict" : "planned",
+      why:
+        kind === "windDown"
+          ? `Uses your ${settings.windDown}-minute wind-down before the calculated bedtime. This is part of the day-before routine.`
+          : `The calculated bedtime precedes your ${settings.sleepTarget}-minute planned sleep opportunity. Estimated sleep latency is ${settings.latency} minutes; the required wake time stays in Shift Plan.`,
+      ...(conflict ? { conflict } : {}),
     });
+    if (conflict) result.conflicts.push(`${label}: ${conflict}`);
   };
-  addEvent("windDown", "Wind down", "bedtime");
-  addEvent("bedtime", "Planned bedtime", "sleepStart");
-  addEvent("sleepStart", "Planned sleep window", "wake");
-  addEvent("wake", "Wake up");
-  const prepare = event("prepare"),
-    departure = event("departure");
-  const prep = essentialPreparation(settings);
-  const routines = orderedPreparationRoutines(settings);
+  addStage("windDown", "Wind down", windStart, bedtime);
+  addStage("bedtime", "Go to sleep", bedtime, sleepStart);
   if (
-    prepare &&
-    departure &&
-    prep.minutes !== null &&
-    Math.abs((departure.at - prepare.at) / MINUTE - prep.minutes) < 0.0001
-  ) {
-    let cursor = prepare.at;
-    for (const routine of routines) {
-      if (routine.minutes === null) continue;
-      const suggested = settings.origins[routine.id] === "suggested";
-      const why = `${suggested ? "Suggested editable duration" : "Entered duration"}: ${routine.minutes} minutes for this selected essential routine. ${routine.includes.length ? `Combined activities (${routine.includes.join(", ")}) count once.` : "It is part of the existing preparation allowance."}`;
-      result.rows.push({
-        id: `routine:${next.id}:${routine.id}`,
-        label: routine.name,
-        kind: "routine",
-        at: cursor,
-        end: cursor + routine.minutes * MINUTE,
-        minutes: routine.minutes,
-        status: "planned",
-        why,
-        routineId: routine.id,
-      });
-      if (suggested)
-        result.missing.push(
-          `Confirm the suggested duration for “${routine.name}” (${routine.minutes} minutes).`,
-        );
-      cursor += routine.minutes * MINUTE;
-    }
-  } else if (prepare) addEvent("prepare", "Get ready", "departure");
-  for (const row of result.rows.filter((r) => r.routineId)) {
-    const routine = routines.find((r) => r.id === row.routineId)!;
-    const kind = routinePreparationKind(routine),
-      required =
-        kind === "ironing"
-          ? "laundry"
-          : kind === "packing"
-            ? "lunch"
-            : undefined;
-    if (!required) continue;
-    for (const task of selected.filter(
-      (t) => relevant(t) && preparationActivityKind(t.title) === required,
-    )) {
-      const before = result.rows.filter((r) => r.taskId === task.id);
-      if (before.some((r) => r.status === "completed")) continue;
-      if (
-        !before.length ||
-        before.some(
-          (r) => r.end === null || r.end > row.at! || r.status === "conflict",
-        )
-      ) {
-        row.status = "conflict";
-        row.conflict = `“${task.title}” must finish before “${row.label}”; move or defer the dependent activity.`;
-        result.conflicts.push(row.conflict);
-      }
-    }
-  }
-  addEvent("departure", "Leave home");
+    bedtime !== undefined &&
+    localAt(bedtime, next.timezone).slice(0, 10) !== preparationDate
+  )
+    result.conflicts.push(
+      `The calculated bedtime is ${localAt(bedtime, next.timezone)}, outside the previous calendar day ${preparationDate}. Review the sleep and wake settings; bedtime has not been moved to a different date.`,
+    );
+  const overridden = new Set(rowPlacements.map((p) => p.taskId));
+  result.placements = [
+    ...originalPlacements.filter((p) => !overridden.has(p.taskId)),
+    ...rowPlacements,
+  ];
   result.rows.sort(
     (a, b) =>
       (a.at ?? Infinity) - (b.at ?? Infinity) || a.id.localeCompare(b.id),
   );
   result.missing = unique(result.missing);
   result.conflicts = unique(result.conflicts);
-  result.provisional =
-    plan.provisional ||
-    result.missing.length > 0 ||
-    result.conflicts.length > 0;
+  result.provisional = result.missing.length > 0 || result.conflicts.length > 0;
   return result;
 }

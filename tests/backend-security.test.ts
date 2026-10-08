@@ -261,6 +261,23 @@ describe("executed PostgreSQL account security", () => {
     });
     expect(await rpc("planner_load")).toEqual({ payload, revision: 1 });
   });
+  it("round-trips blank task-input metadata with valid canonical scheduling bounds", async () => {
+    const state = JSON.parse(payload);
+    state.tasks[0] = {
+      ...state.tasks[0],
+      location: "",
+      windowStart: "00:00",
+      windowEnd: "00:00",
+      omittedFields: ["deadline", "windowStart", "windowEnd", "travelMinutes"],
+      preparationAutoStart: true,
+    };
+    const exact = JSON.stringify(state);
+    expect(await rpc("planner_save", [exact, 0])).toEqual({
+      payload: exact,
+      revision: 1,
+    });
+    expect(await rpc("planner_load")).toEqual({ payload: exact, revision: 1 });
+  });
   it("extends only the two preference lists and preserves validator ownership, ACL and attributes", () => {
     expect(previousExpandedChoiceError).toBe("22023");
     expect(expandedValidator.metadata).toEqual(previousValidator.metadata);

@@ -31,7 +31,7 @@ Follow [the authentication backend and migration guide](docs/auth-backend.md) be
 
 ## What it does
 
-- **Today:** next actual duty, preparation checklist, explainable departure/arrival and sleep events, and shift-transition review.
+- **Today:** next actual duty and preparation checklist; **Shift transition** schedules tasks and the bedtime routine for the previous calendar day; **Shift Plan** retains the existing sleep, preparation, departure and arrival calculations for that duty.
 - **Rota:** day/week/month/year views, editable duties and templates, 52-week patterns, week copying, exceptions and Undo. Rest, unknown dates, requested leave and confirmed leave stay distinct. Overnight work, overtime and actual finish times are separate inputs.
 - **Plan:** fixed appointments and essential/flexible/optional tasks, deadlines, windows, travel, recurrence, locks, splitting and per-occurrence completion or skipping.
 - **Sleep:** planned opportunities, conflict/missing-input explanations, optional self-reported diary and educational NHS/HSE links. The app does not measure sleep or supply specialist night-shift coaching.

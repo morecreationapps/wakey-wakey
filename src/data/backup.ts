@@ -322,6 +322,20 @@ export function validateBackup(value: unknown): AppState {
       bool(item[key], `${path}.${key}`);
     if (item.linkedShiftId !== undefined)
       id(item.linkedShiftId, `${path}.linkedShiftId`);
+    if (item.omittedFields !== undefined) {
+      const omitted = array(item.omittedFields, `${path}.omittedFields`, 4);
+      omitted.forEach((field, at) =>
+        choice(
+          field,
+          ["deadline", "windowStart", "windowEnd", "travelMinutes"],
+          `${path}.omittedFields[${at}]`,
+        ),
+      );
+      if (new Set(omitted).size !== omitted.length)
+        fail(`${path}.omittedFields`, "contains repeated field names");
+    }
+    if (item.preparationAutoStart !== undefined)
+      bool(item.preparationAutoStart, `${path}.preparationAutoStart`);
     if (item.occurrenceStates !== undefined) {
       const occurrences = object(
         item.occurrenceStates,

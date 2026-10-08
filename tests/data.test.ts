@@ -657,6 +657,60 @@ describe("schema 1 backup validation", () => {
         ),
       ).toMatchObject({ settings: { caffeineBeforeBed } });
   });
+  it("round-trips blank optional task inputs without weakening canonical schedule validation", () => {
+    const value = {
+      ...initialState(),
+      tasks: [
+        {
+          ...recurringTask,
+          omittedFields: [
+            "deadline",
+            "windowStart",
+            "windowEnd",
+            "travelMinutes",
+          ],
+          windowStart: "00:00",
+          windowEnd: "00:00",
+          travelMinutes: 0,
+          location: "",
+          preparationAutoStart: true,
+        },
+      ],
+    };
+    const restored = parseBackup(JSON.stringify(value));
+    expect(parseBackup(exportBackup(restored))).toEqual(value);
+    for (const preparationAutoStart of [null, "true", 1])
+      expect(() =>
+        parseBackup(
+          JSON.stringify({
+            ...value,
+            tasks: [{ ...value.tasks[0], preparationAutoStart }],
+          }),
+        ),
+      ).toThrow(/preparationAutoStart/);
+    for (const omittedFields of [
+      null,
+      "deadline",
+      ["location"],
+      ["deadline", "deadline"],
+    ])
+      expect(() =>
+        parseBackup(
+          JSON.stringify({
+            ...value,
+            tasks: [{ ...value.tasks[0], omittedFields }],
+          }),
+        ),
+      ).toThrow(/omittedFields/);
+    expect(() =>
+      parseBackup(
+        JSON.stringify({
+          ...value,
+          tasks: [{ ...value.tasks[0], deadline: "" }],
+        }),
+      ),
+    ).toThrow(/deadline/);
+  });
   it("rejects invalid caffeine timing, occurrence dates, states and map shapes", () => {
     const state = initialState();
     for (const caffeineBeforeBed of [-1, 2881, "360", null])

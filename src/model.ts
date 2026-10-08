@@ -110,6 +110,12 @@ export interface Task {
   state: TaskState;
   occurrenceStates?: Record<ISODate, TaskState>;
   linkedShiftId?: string;
+  /** Optional form inputs left blank; canonical scheduling bounds remain valid. */
+  omittedFields?: (
+    "deadline" | "windowStart" | "windowEnd" | "travelMinutes"
+  )[];
+  /** Recalculate an untouched suggested start; manual or fixed times stay put. */
+  preparationAutoStart?: boolean;
 }
 export interface SleepLog {
   id: string;

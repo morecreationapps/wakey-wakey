@@ -170,7 +170,7 @@ const placement = (results: ReturnType<typeof planTasks>, id: string) =>
   results.find((p) => p.taskId === id)!;
 
 describe("one preparation view of the existing scheduling data", () => {
-  it("shows Rest today and the actual tomorrow duty with chronological saved tasks and distinct full sleep stages", () => {
+  it("shows the previous calendar day's saved tasks and bedtime routine, with shift-day events kept in Shift Plan", () => {
     const entries = [rest(), work()];
     const prep = planPreparation(entries, savedTasks(), settings(), clock());
     expect(prep.todayStatus).toBe("Rest");
@@ -180,23 +180,37 @@ describe("one preparation view of the existing scheduling data", () => {
     expect(timed.map((r) => r.at)).toEqual(
       timed.map((r) => r.at).sort((a, b) => a! - b!),
     );
-    const sleep = prep.rows.find((r) => r.kind === "sleepStart")!;
-    expect(localAt(sleep.at!, timezone)).toBe(`${today}T21:00`);
-    expect(localAt(sleep.end!, timezone)).toBe(`${tomorrow}T05:00`);
-    expect(sleep.minutes).toBe(480);
+    expect(prep.preparationDate).toBe(today);
     expect(prep.rows.find((r) => r.kind === "bedtime")?.at).toBe(
       zonedEpoch(`${today}T20:30`, timezone),
     );
     expect(prep.rows.find((r) => r.kind === "windDown")?.at).toBe(
       zonedEpoch(`${today}T19:30`, timezone),
     );
-    expect(prep.rows.find((r) => r.kind === "wake")?.at).toBe(sleep.end);
+    expect(
+      prep.rows.some((r) =>
+        [
+          "wake",
+          "prepare",
+          "departure",
+          "workStart",
+          "workEnd",
+          "sleepStart",
+        ].includes(r.kind),
+      ),
+    ).toBe(false);
+    expect(
+      prep.shiftPlan?.events.find((r) => r.kind === "sleepStart")?.at,
+    ).toBe(zonedEpoch(`${today}T21:00`, timezone));
+    expect(prep.shiftPlan?.events.find((r) => r.kind === "wake")?.at).toBe(
+      zonedEpoch(`${tomorrow}T05:00`, timezone),
+    );
     expect(prep.rows.find((r) => r.taskId === "completed")).toMatchObject({
       status: "completed",
-      at: null,
-      end: null,
+      at: zonedEpoch(`${today}T08:30`, timezone),
+      end: zonedEpoch(`${today}T08:40`, timezone),
     });
-    expect(prep.rows.filter((r) => r.routineId)).toHaveLength(1);
+    expect(prep.rows.filter((r) => r.routineId)).toHaveLength(0);
     expect(prep.rows.some((r) => r.kind === "prepare")).toBe(false);
     expect(prep.provisional).toBe(false);
   });
@@ -262,7 +276,7 @@ describe("one preparation view of the existing scheduling data", () => {
     expect(prep.rows.some((r) => r.taskId === "lunch" && r.at !== null)).toBe(
       true,
     );
-    expect(prep.rows.some((r) => r.kind === "sleepStart")).toBe(true);
+    expect(prep.rows.some((r) => r.kind === "bedtime")).toBe(true);
   });
 
   it("returns no invented timeline when no future Work is recorded", () => {
@@ -353,8 +367,9 @@ describe("one preparation view of the existing scheduling data", () => {
       { shiftPlan, placements },
     );
     expect(prep.shiftPlan).toBe(shiftPlan);
-    expect(prep.rows.find((r) => r.kind === "wake")?.at).toBe(
-      shiftPlan.events.find((e) => e.kind === "wake")?.at,
+    expect(prep.rows.some((r) => r.kind === "wake")).toBe(false);
+    expect(prep.rows.find((r) => r.kind === "bedtime")?.at).toBe(
+      shiftPlan.events.find((e) => e.kind === "bedtime")?.at,
     );
     expect(JSON.stringify(state)).toBe(before);
     expect(parseBackup(exportBackup(state))).toEqual(state);
@@ -409,7 +424,7 @@ describe("one preparation view of the existing scheduling data", () => {
     expect(after.rows.find((r) => r.taskId === "iron")?.at).toBeGreaterThan(
       before.rows.find((r) => r.taskId === "iron")!.at!,
     );
-    expect(after.rows.find((r) => r.kind === "wake")?.at).toBe(
+    expect(after.shiftPlan?.events.find((r) => r.kind === "wake")?.at).toBe(
       zonedEpoch(`${tomorrow}T06:00`, timezone),
     );
     expect(after.rows.find((r) => r.taskId === "haircut")?.at).toBe(
@@ -451,14 +466,17 @@ describe("one preparation view of the existing scheduling data", () => {
       settings({ origins: { ...settings().origins, combined: "suggested" } }),
       clock(),
     );
-    expect(known.rows.filter((r) => r.routineId)).toHaveLength(1);
-    expect(known.rows.find((r) => r.routineId)?.why).toContain(
-      "Suggested editable duration",
+    expect(known.rows.filter((r) => r.routineId)).toHaveLength(0);
+    expect(known.shiftPlan).toEqual(
+      planShift(
+        work(),
+        settings({ origins: { ...settings().origins, combined: "suggested" } }),
+        [rest(), work()],
+      ),
     );
-    expect(known.missing.join(" ")).toContain("Confirm the suggested duration");
   });
 
-  it("splits essential routine totals exactly once and orders selected lunch before packing", () => {
+  it("keeps essential shift-day preparation totals in Shift Plan, without copying them into Transition", () => {
     const s = settings({
       routines: [
         {
@@ -479,15 +497,12 @@ describe("one preparation view of the existing scheduling data", () => {
     });
     const prep = planPreparation([rest(), work()], [], s, clock());
     const rows = prep.rows.filter((r) => r.routineId);
-    expect(rows.map((r) => r.routineId)).toEqual(["lunch", "pack"]);
-    expect(rows[0].end).toBe(rows[1].at);
-    expect(rows.reduce((sum, r) => sum + r.minutes!, 0)).toBe(30);
-    expect(rows[0].at).toBe(
-      prep.shiftPlan!.events.find((e) => e.kind === "prepare")!.at,
-    );
-    expect(rows[1].end).toBe(
-      prep.shiftPlan!.events.find((e) => e.kind === "departure")!.at,
-    );
+    expect(rows).toEqual([]);
+    expect(
+      (prep.shiftPlan!.events.find((e) => e.kind === "departure")!.at -
+        prep.shiftPlan!.events.find((e) => e.kind === "prepare")!.at) /
+        MINUTE,
+    ).toBe(30);
     expect(prep.rows.some((r) => r.kind === "prepare")).toBe(false);
   });
 

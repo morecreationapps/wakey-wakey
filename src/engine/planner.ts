@@ -1303,6 +1303,35 @@ export function planTasks(
       ? entries.find((e) => e.id === task.linkedShiftId && e.status === "Work")
       : nextWork(entries, snapshotClock, settings.timezone);
     if (!entry) return undefined;
+    // Day-before preparation can use its own saved prerequisite. A separate
+    // shift-day routine still belongs to Shift Plan and must not move this pair
+    // into the morning of the duty.
+    try {
+      const shiftDate = localAt(
+        zonedEpoch(entry.start!, entry.timezone, entry.disambiguation),
+        entry.timezone,
+      ).slice(0, 10);
+      const preparationStart = onDate(
+        addDays(shiftDate, -1),
+        "00:00",
+        entry.timezone,
+      );
+      const preparationEnd = onDate(shiftDate, "00:00", entry.timezone);
+      const inPreparationDay = (value: Task) =>
+        zonedEpoch(value.earliest, settings.timezone) >= preparationStart &&
+        zonedEpoch(value.deadline, settings.timezone) <= preparationEnd;
+      if (
+        inPreparationDay(task) &&
+        (prerequisites.get(task.id) ?? []).some(
+          (before) =>
+            preparationActivityKind(before.title) === required &&
+            inPreparationDay(before),
+        )
+      )
+        return undefined;
+    } catch {
+      /* Invalid bounds are handled by the normal task validation. */
+    }
     if (
       !task.linkedShiftId &&
       (entry.date < task.earliest.slice(0, 10) ||

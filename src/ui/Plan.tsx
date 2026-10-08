@@ -1,15 +1,13 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { View } from "react-native";
 import { Task, uid, systemClock } from "../model";
-import { nextWork, planTasks } from "../engine/planner";
+import { planTasks, type TaskPlacement } from "../engine/planner";
+import { planPreparation } from "../engine/preparation";
 import {
-  addDays,
-  dateInZone,
-  displayDate,
-  displayTime,
-  localAt,
-  zonedEpoch,
-} from "../engine/time";
+  defaultPreparationTaskStart,
+  suggestPreparationTask,
+} from "../engine/taskSuggestions";
+import { displayDate, displayTime, localAt } from "../engine/time";
 import {
   ScreenProps,
   Card,
@@ -26,6 +24,16 @@ import {
 } from "./components";
 import { DateTimePickerField, TimePickerField } from "./DateTimePickers";
 import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
+import {
+  applyTaskSuggestion,
+  snapshotTaskPlacement,
+  taskForEditing,
+  taskForSaving,
+  taskSuggestionOverrides,
+  taskTimeProvenance,
+  withOptionalTaskField,
+  type TaskDraftField,
+} from "./taskDraft";
 
 function pickerText(value: string, format: (value: string) => string): string {
   try {
@@ -37,77 +45,137 @@ function pickerText(value: string, format: (value: string) => string): string {
 
 export function Plan({ state, change, notify }: ScreenProps) {
   const s = state.settings,
-    today = dateInZone(systemClock, s.timezone),
-    next = nextWork(state.entries, systemClock, s.timezone);
+    preparation = planPreparation(state.entries, state.tasks, s, systemClock),
+    next = preparation.nextShift;
   const nextShiftTime = next?.start
     ? pickerText(next.start.slice(11, 16), (value) =>
         formatPickerTime(value, s.clockFormat),
       )
     : "";
   const [edit, setEdit] = useState<Task | null>(null),
-    [includeDone, setIncludeDone] = useState(false);
-  const slots = planTasks(state.tasks, state.entries, s, systemClock);
-  function create(kind: Task["kind"] = "flexible", title = "") {
-    setEdit({
-      id: uid("task"),
-      title,
-      kind,
-      minutes: 30,
-      deadline: (next?.date ?? addDays(today, 7)) + "T18:00",
-      earliest: localAt(systemClock.now(), s.timezone).slice(0, 16),
-      windowStart: "09:00",
-      windowEnd: "18:00",
-      priority: 2,
-      recurrence: "none",
-      location: "",
-      travelMinutes: 0,
-      movable: kind !== "fixed",
-      splittable: false,
-      locked: kind === "fixed",
-      scheduledStart: null,
-      state: "pending",
-      linkedShiftId: kind === "essential" ? next?.id : undefined,
-    });
+    [includeDone, setIncludeDone] = useState(false),
+    [suggestionNotice, setSuggestionNotice] = useState(""),
+    [suggestionConflict, setSuggestionConflict] = useState("");
+  const editedFields = useRef(new Set<TaskDraftField>());
+  const editingSavedTask = useRef(false);
+  const slots = next
+    ? preparation.placements
+    : planTasks(state.tasks, state.entries, s, systemClock);
+  function suggest(task: Task): Task {
+    if (editingSavedTask.current) return task;
+    const overrides = {
+      id: task.id,
+      kind: task.kind,
+      movable: task.movable,
+      locked: task.locked,
+      ...taskSuggestionOverrides(task, editedFields.current),
+    };
+    const suggestion =
+      suggestPreparationTask(
+        task.title,
+        state.entries,
+        state.tasks,
+        s,
+        systemClock,
+        overrides,
+        next,
+      ) ??
+      (task.linkedShiftId
+        ? defaultPreparationTaskStart(
+            state.entries,
+            state.tasks,
+            s,
+            systemClock,
+            overrides,
+            next,
+          )
+        : null);
+    setSuggestionNotice(suggestion?.explanation ?? "");
+    setSuggestionConflict(suggestion?.conflict ?? "");
+    return suggestion
+      ? applyTaskSuggestion(task, suggestion, editedFields.current)
+      : task;
   }
-  const put = (patch: Partial<Task>) =>
-    setEdit((e) => (e ? { ...e, ...patch } : null));
-  const action = (t: Task, patch: Partial<Task>) =>
+  function create(
+    kind: Task["kind"] = "flexible",
+    title = "",
+    forPreparation = true,
+  ) {
+    editedFields.current = new Set();
+    editingSavedTask.current = false;
+    setEdit(
+      suggest({
+        id: uid("task"),
+        title,
+        kind,
+        minutes: 30,
+        deadline: "",
+        earliest:
+          forPreparation && next
+            ? ""
+            : localAt(systemClock.now(), s.timezone).slice(0, 16),
+        windowStart: "",
+        windowEnd: "",
+        priority: 2,
+        recurrence: "none",
+        location: "",
+        travelMinutes: 0,
+        movable: kind !== "fixed",
+        splittable: false,
+        locked: kind === "fixed",
+        scheduledStart: null,
+        state: "pending",
+        linkedShiftId: forPreparation ? next?.id : undefined,
+        omittedFields: [
+          "deadline",
+          "windowStart",
+          "windowEnd",
+          "travelMinutes",
+        ],
+      }),
+    );
+  }
+  function put(patch: Partial<Task>, explicitTimeSelection = false) {
+    if (!edit) return;
+    for (const field of Object.keys(patch) as TaskDraftField[])
+      editedFields.current.add(field);
+    setEdit(
+      suggest(taskTimeProvenance({ ...edit, ...patch }, explicitTimeSelection)),
+    );
+  }
+  function beginEditing(task: Task) {
+    editingSavedTask.current = true;
+    editedFields.current = new Set();
+    setSuggestionNotice("");
+    setSuggestionConflict("");
+    const placement = slots.find((p) => p.taskId === task.id);
+    setEdit(
+      taskForEditing(
+        task,
+        placement?.start !== null && placement?.start !== undefined
+          ? localAt(placement.start, s.timezone).slice(0, 16)
+          : undefined,
+      ),
+    );
+  }
+  const action = (t: Task, patch: Partial<Task>, placement?: TaskPlacement) =>
     change((a) => ({
       ...a,
-      tasks: a.tasks.map((x) => (x.id === t.id ? { ...x, ...patch } : x)),
+      tasks: a.tasks.map((x) =>
+        x.id === t.id
+          ? taskTimeProvenance({
+              ...(patch.state === "completed" || patch.state === "skipped"
+                ? snapshotTaskPlacement(x, placement, s.timezone)
+                : x),
+              ...patch,
+            })
+          : x,
+      ),
     }));
   function save() {
     if (!edit) return;
     try {
-      if (!edit.title.trim()) throw Error("Give the task a name.");
-      if (
-        edit.minutes <= 0 ||
-        !Number.isFinite(edit.minutes) ||
-        edit.travelMinutes < 0
-      )
-        throw Error(
-          "Enter a positive duration and non-negative travel allowance.",
-        );
-      const from = zonedEpoch(edit.earliest, s.timezone),
-        deadline = zonedEpoch(edit.deadline, s.timezone);
-      if (deadline < from) throw Error("Deadline must follow earliest time.");
-      if (
-        ![edit.windowStart, edit.windowEnd].every((x) =>
-          /^([01]\d|2[0-3]):[0-5]\d$/.test(x),
-        )
-      )
-        throw Error("Choose valid preferred window start and end times.");
-      if (edit.scheduledStart) zonedEpoch(edit.scheduledStart, s.timezone);
-      const task = {
-        ...edit,
-        ...(edit.kind === "fixed"
-          ? {
-              locked: true,
-              movable: false,
-              scheduledStart: edit.scheduledStart ?? edit.earliest,
-            }
-          : {}),
-      };
+      const task = taskForSaving(edit, s.timezone);
       change((a) => ({
         ...a,
         tasks: [...a.tasks.filter((t) => t.id !== task.id), task],
@@ -132,7 +200,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
         <Button
           title="Add task / appointment"
           icon="plus"
-          onPress={() => create()}
+          onPress={() => create("flexible", "", false)}
         />
       </Row>
       <Card>
@@ -143,8 +211,9 @@ export function Plan({ state, change, notify }: ScreenProps) {
             : "No next duty recorded. Add your rota first."}
         </Body>
         <Body muted>
-          Suggested task ideas are not saved until you choose one. Enter its
-          duration, deadline and preferred window before saving.
+          Choose an idea or add your own task. Its day-before preparation time
+          and duration are suggested in the form and remain editable. Nothing is
+          saved until you choose Save task.
         </Body>
         <Row>
           {[
@@ -176,12 +245,31 @@ export function Plan({ state, change, notify }: ScreenProps) {
               title={title}
               secondary
               small
-              onPress={() =>
-                create(title === "Haircut" ? "fixed" : "flexible", title)
-              }
+              onPress={() => create("flexible", title)}
             />
           ))}
         </Row>
+        <Row>
+          {[
+            "Last meal before bed",
+            "Shower for bed",
+            "Wind down",
+            "Go to sleep",
+          ].map((title) => (
+            <Button
+              key={title}
+              title={title}
+              secondary
+              small
+              onPress={() => create("essential", title)}
+            />
+          ))}
+        </Row>
+        <Button
+          title="Add preparation task / appointment"
+          icon="plus"
+          onPress={() => create()}
+        />
         <Body muted>
           Opening hours and appointments are only those you enter. No booking or
           business availability is inferred.
@@ -199,6 +287,8 @@ export function Plan({ state, change, notify }: ScreenProps) {
             value={edit.title}
             onChange={(v) => put({ title: v })}
           />
+          {!!suggestionNotice && <Body muted>{suggestionNotice}</Body>}
+          {!!suggestionConflict && <Notice error>{suggestionConflict}</Notice>}
           <Choices
             values={["fixed", "essential", "flexible", "optional"]}
             value={edit.kind}
@@ -207,7 +297,9 @@ export function Plan({ state, change, notify }: ScreenProps) {
                 kind: v,
                 movable: v !== "fixed",
                 locked: v === "fixed",
-                linkedShiftId: v === "essential" ? next?.id : undefined,
+                ...(v === "essential" && next && !edit.linkedShiftId
+                  ? { linkedShiftId: next.id }
+                  : {}),
               })
             }
           />
@@ -223,42 +315,76 @@ export function Plan({ state, change, notify }: ScreenProps) {
               onChange={(v) => /^\d*$/.test(v) && put({ minutes: Number(v) })}
             />
             <Field
-              label="Travel allowance (minutes)"
-              value={String(edit.travelMinutes)}
+              label="Travel allowance (minutes, optional)"
+              value={
+                edit.omittedFields?.includes("travelMinutes")
+                  ? ""
+                  : String(edit.travelMinutes)
+              }
               numeric
               onChange={(v) =>
-                /^\d*$/.test(v) && put({ travelMinutes: Number(v) })
+                /^\d*$/.test(v) &&
+                put({
+                  travelMinutes: Number(v),
+                  omittedFields: withOptionalTaskField(
+                    edit,
+                    "travelMinutes",
+                    v === "",
+                  ),
+                })
               }
               hint="Reserved before the task; include any extra occupied travel in its total duration."
             />
           </Row>
           <Body muted>Times use {s.timezone}.</Body>
           <DateTimePickerField
-            label="Earliest / fixed start"
+            label={
+              editingSavedTask.current && (edit.locked || edit.kind === "fixed")
+                ? "Earliest permitted date and time"
+                : "Start date and time"
+            }
             value={edit.earliest}
-            onChange={(v) => put({ earliest: v })}
+            onChange={(v) =>
+              put(
+                {
+                  earliest: v,
+                  ...(!editingSavedTask.current ||
+                  (!edit.locked && edit.kind !== "fixed")
+                    ? { scheduledStart: v }
+                    : {}),
+                },
+                true,
+              )
+            }
             settings={s}
           />
           <DateTimePickerField
-            label="Deadline"
+            label="Deadline (optional)"
             value={edit.deadline}
             onChange={(v) => put({ deadline: v })}
             settings={s}
+            allowClear
           />
           <Row>
             <TimePickerField
-              label="Preferred window start"
+              label="Preferred window start (optional)"
               value={edit.windowStart}
               onChange={(v) => put({ windowStart: v })}
               clockFormat={s.clockFormat}
+              allowClear
             />
             <TimePickerField
-              label="Preferred window end"
+              label="Preferred window end (optional)"
               value={edit.windowEnd}
               onChange={(v) => put({ windowEnd: v })}
               clockFormat={s.clockFormat}
+              allowClear
             />
           </Row>
+          <Body muted>
+            Deadline, preferred window, travel and location are optional. Leave
+            any details that do not apply blank.
+          </Body>
           <Field
             label="Location (optional)"
             value={edit.location}
@@ -292,9 +418,11 @@ export function Plan({ state, change, notify }: ScreenProps) {
             onChange={(v) =>
               put({
                 locked: v,
-                scheduledStart: v
-                  ? (edit.scheduledStart ?? edit.earliest)
-                  : null,
+                ...(v
+                  ? { scheduledStart: edit.scheduledStart ?? edit.earliest }
+                  : editingSavedTask.current
+                    ? { scheduledStart: null }
+                    : {}),
               })
             }
           />
@@ -307,7 +435,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
               <DateTimePickerField
                 label="Locked start"
                 value={edit.scheduledStart ?? edit.earliest}
-                onChange={(v) => put({ scheduledStart: v })}
+                onChange={(v) => put({ scheduledStart: v }, true)}
                 settings={s}
               />
             </>
@@ -333,7 +461,8 @@ export function Plan({ state, change, notify }: ScreenProps) {
         )
         .map((t) => {
           const occurrences = slots.filter((p) => p.taskId === t.id),
-            p = occurrences[0];
+            p = occurrences[0],
+            missingOccurrence = t.recurrence !== "none" && !p?.occurrenceDate;
           return (
             <Card key={t.id}>
               <Row style={{ justifyContent: "space-between" }}>
@@ -348,14 +477,15 @@ export function Plan({ state, change, notify }: ScreenProps) {
                   secondary
                   small
                   icon="edit-2"
-                  onPress={() => setEdit({ ...t })}
+                  onPress={() => beginEditing(t)}
                 />
               </Row>
               <Body>
-                {t.minutes} min · Deadline{" "}
-                {pickerText(t.deadline, (value) =>
-                  formatPickerDateTime(value, s.dateFormat, s.clockFormat),
-                )}
+                {t.minutes} min
+                {!t.omittedFields?.includes("deadline") &&
+                  ` · Deadline ${pickerText(t.deadline, (value) =>
+                    formatPickerDateTime(value, s.dateFormat, s.clockFormat),
+                  )}`}
                 {t.recurrence === "none" ? "" : ` · ${t.recurrence}`}
               </Body>
               {occurrences.slice(0, 8).map((o, i) => (
@@ -409,6 +539,12 @@ export function Plan({ state, change, notify }: ScreenProps) {
                   again.
                 </Body>
               )}
+              {missingOccurrence && (
+                <Body muted>
+                  No next occurrence is scheduled. Review this task’s date range
+                  before completing or skipping an occurrence.
+                </Body>
+              )}
               <Row>
                 {!["completed", "skipped"].includes(t.state) && (
                   <>
@@ -445,7 +581,9 @@ export function Plan({ state, change, notify }: ScreenProps) {
                       }
                       small
                       icon="check"
+                      disabled={missingOccurrence}
                       onPress={() =>
+                        !missingOccurrence &&
                         action(
                           t,
                           t.recurrence !== "none" && p?.occurrenceDate
@@ -456,6 +594,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
                                 },
                               }
                             : { state: "completed" },
+                          p,
                         )
                       }
                     />
@@ -467,7 +606,9 @@ export function Plan({ state, change, notify }: ScreenProps) {
                       }
                       small
                       secondary
+                      disabled={missingOccurrence}
                       onPress={() =>
+                        !missingOccurrence &&
                         action(
                           t,
                           t.recurrence !== "none" && p?.occurrenceDate
@@ -478,6 +619,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
                                 },
                               }
                             : { state: "skipped" },
+                          p,
                         )
                       }
                     />
