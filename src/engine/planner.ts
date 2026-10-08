@@ -15,6 +15,10 @@ import {
   onDate,
   zonedEpoch,
 } from "./time";
+import {
+  beforeShiftBedtime,
+  beforeShiftSleepPreferences,
+} from "./beforeShiftSleep";
 
 export interface PlanEvent {
   kind: string;
@@ -49,6 +53,10 @@ export interface TaskPlacement {
   conflict?: string;
   parts?: { start: number; end: number }[];
   occurrenceDate?: string;
+}
+export interface PreparationTaskContext {
+  /** Opt-in only for the previous date of this duty's explicit sleep pair. */
+  beforeShiftId: string;
 }
 interface Interval {
   start: number;
@@ -424,30 +432,49 @@ export function planShift(
     );
   }
   const localDate = localAt(start, entry.timezone).slice(0, 10);
+  const beforeShift = beforeShiftSleepPreferences(entry, settings, start);
+  if (beforeShift) missing.push(...beforeShift.missing);
   let wake: number | null = null;
   const preference =
-    entry.category === "Early"
+    beforeShift?.wakeClock ??
+    (entry.category === "Early"
       ? settings.earlyWake
       : entry.category === "Late"
         ? settings.lateWake
-        : settings.restWake;
+        : settings.restWake);
   if (entry.category === "Night") {
     missing.push(
       "Specialist night-shift sleep coaching has not been implemented or reviewed.",
     );
   } else if (preference) {
     try {
-      wake = onDate(
-        localDate,
-        preference,
-        entry.timezone,
-        entry.disambiguation,
-      );
-      if (prepare !== null && wake > prepare) {
+      wake = beforeShift?.wakeClock
+        ? beforeShift.wake
+        : onDate(localDate, preference, entry.timezone, entry.disambiguation);
+      if (prepare !== null && wake !== null && wake > prepare) {
         conflicts.push(
-          `Your preferred wake time ${preference} is after required preparation; an earlier wake is needed.`,
+          beforeShift?.wakeClock
+            ? `Your wake time before a ${entry.category.toLowerCase()} shift (${preference}) is after required preparation; the earlier required wake is used and your entered preference is retained in Settings.`
+            : `Your preferred wake time ${preference} is after required preparation; an earlier wake is needed.`,
         );
         wake = prepare;
+      }
+      const knownRequiredStart = Math.min(
+        start,
+        ...events
+          .filter((e) => ["arrival", "departure", "prepare"].includes(e.kind))
+          .map((e) => e.at),
+      );
+      if (
+        beforeShift?.wakeClock &&
+        prepare === null &&
+        wake !== null &&
+        wake > knownRequiredStart
+      ) {
+        conflicts.push(
+          `Your wake time before a ${entry.category.toLowerCase()} shift (${preference}) is ${wake > start ? "later than the recorded work start" : "later than the known required arrival or departure time"}. Complete the travel and essential preparation settings to calculate a required earlier wake; your preference is retained and no usable bedtime routine has been invented.`,
+        );
+        wake = null;
       }
     } catch (e) {
       missing.push(
@@ -476,8 +503,12 @@ export function planShift(
       "Wake up",
       wake,
       entry.category === "Early"
-        ? "Wake at or before essential preparation; use an earlier entered preference when it fits."
-        : "Use your entered wake preference; a late preparation time does not determine waking.",
+        ? beforeShift?.wakeClock
+          ? "Uses your wake preference for the morning after the night before an early shift, at or before required essential preparation."
+          : "Wake at or before essential preparation; use an earlier entered preference when it fits."
+        : beforeShift?.wakeClock
+          ? "Uses your wake preference for the morning after the night before a late shift; a late work start does not determine waking."
+          : "Use your entered wake preference; a late preparation time does not determine waking.",
     );
     if (validSleepTarget(settings.sleepTarget)) {
       const sleepStart = wake - settings.sleepTarget * MINUTE;
@@ -488,14 +519,35 @@ export function planShift(
         `Wake minus the ${settings.sleepTarget}-minute sleep target. This is planned sleep, not measured sleep.`,
       );
       if (finiteMinutes(settings.latency)) {
-        const bedtime = sleepStart - settings.latency * MINUTE;
+        const preferredSleep = beforeShift
+          ? beforeShiftBedtime(
+              beforeShift,
+              wake,
+              settings.sleepTarget,
+              settings.latency,
+            )
+          : null;
+        const bedtime =
+          preferredSleep?.bedtime ?? sleepStart - settings.latency * MINUTE;
+        if (preferredSleep) {
+          conflicts.push(...preferredSleep.conflicts);
+          const sleepEvent = events.find((e) => e.kind === "sleepStart")!;
+          sleepEvent.at = preferredSleep.sleepStart;
+          sleepEvent.why = `Bedtime plus ${settings.latency} minutes estimated latency leaves at least your ${settings.sleepTarget}-minute sleep target before waking. This is planned sleep, not measured sleep.`;
+        }
         emit(
           "bedtime",
           "Planned bedtime",
           bedtime,
-          `Target sleep start minus ${settings.latency} minutes estimated time to fall asleep.`,
+          beforeShift?.bedtime !== null && beforeShift?.bedtime !== undefined
+            ? `Uses the previous-calendar-day bedtime preference before this ${entry.category.toLowerCase()} shift when it protects the full sleep target; an inadequate preference is flagged and the earlier required bedtime is used.`
+            : `Target sleep start minus ${settings.latency} minutes estimated time to fall asleep.`,
         );
-        if (entry.category === "Early" && settings.earlyBed) {
+        if (
+          entry.category === "Early" &&
+          settings.earlyBed &&
+          !beforeShift?.bedtimeClock
+        ) {
           try {
             let usualBed = onDate(
               localDate,
@@ -944,6 +996,7 @@ export function planTasks(
   settings: Settings,
   clock: Clock,
   horizonDays = 14,
+  preparationContext?: PreparationTaskContext,
 ): TaskPlacement[] {
   const now = clock.now(),
     snapshotClock: Clock = { now: () => now },
@@ -951,6 +1004,38 @@ export function planTasks(
   const today = dateInZone(snapshotClock, settings.timezone),
     lastDate = addDays(today, Math.max(1, Math.min(366, horizonDays)));
   const horizonEnd = onDate(lastDate, "00:00", settings.timezone);
+  let provisionalPreparationDate: string | undefined;
+  if (preparationContext && (!settings.restWake || !settings.restBed)) {
+    const selectedShift = entries.find(
+      (e) => e.id === preparationContext.beforeShiftId && e.status === "Work",
+    );
+    if (selectedShift?.timezone === settings.timezone) {
+      try {
+        const bounds = workBounds(selectedShift);
+        if (bounds) {
+          const preferences = beforeShiftSleepPreferences(
+              selectedShift,
+              settings,
+              bounds.start,
+            ),
+            selectedPlan = planShift(selectedShift, settings, entries, tasks),
+            wind = selectedPlan.events.find((e) => e.kind === "windDown")?.at;
+          if (
+            preferences !== null &&
+            !preferences.missing.length &&
+            selectedPlan.events.some((e) => e.kind === "wake") &&
+            selectedPlan.events.some((e) => e.kind === "bedtime") &&
+            wind !== undefined &&
+            localAt(wind, settings.timezone).slice(0, 10) ===
+              preferences.preparationDate
+          )
+            provisionalPreparationDate = preferences.preparationDate;
+        }
+      } catch {
+        /* Invalid or ambiguous preferences remain unconfirmed. */
+      }
+    }
+  }
   const busy: Interval[] = [],
     uncertain = new Map<string, string[]>(),
     result: TaskPlacement[] = [];
@@ -1188,6 +1273,10 @@ export function planTasks(
         finiteMinutes,
       )
     ) {
+      // A selected explicit pre-shift pair protects this coming night's sleep.
+      // Only the preparation caller may propose reviewable evening gaps while
+      // ordinary previous-night waking remains unknown; no rest time is invented.
+      if (date === provisionalPreparationDate) continue;
       unclear(
         date,
         "Rest/leave-day bedtime, wake time and sleep durations are needed to protect sleep.",
@@ -1585,6 +1674,32 @@ export function planTasks(
         continue;
       }
       let upper = Math.min(occurrenceEnd, horizonEnd);
+      if (
+        provisionalPreparationDate &&
+        task.linkedShiftId === preparationContext?.beforeShiftId
+      ) {
+        // Leave room for selected dependent activities after this prerequisite
+        // when packing or ironing is allocated near the bedtime routine.
+        const descendants = new Set<string>();
+        const reserve = (value: Task): number => {
+          let total = 0;
+          for (const other of flexible) {
+            if (
+              descendants.has(other.id) ||
+              !other.preparationAutoStart ||
+              other.linkedShiftId !== task.linkedShiftId ||
+              !(prerequisites.get(other.id) ?? []).some(
+                (before) => before.id === value.id,
+              )
+            )
+              continue;
+            descendants.add(other.id);
+            total += other.minutes + other.travelMinutes + reserve(other);
+          }
+          return total;
+        };
+        upper -= reserve(task) * MINUTE;
+      }
       // A booked dependant cannot move. Its prerequisite must fit before the
       // appointment's reserved travel, or the fixed row will show a conflict.
       for (const dependant of fixed.filter((other) =>
@@ -1629,6 +1744,14 @@ export function planTasks(
         remaining > 0;
         date = addDays(date, 1)
       ) {
+        if (
+          date === provisionalPreparationDate &&
+          task.linkedShiftId !== preparationContext?.beforeShiftId
+        ) {
+          noSlotReason =
+            "Rest/leave-day bedtime and wake inputs are still needed for this task; the provisional pre-shift availability applies only to preparation tasks linked to the selected duty.";
+          continue;
+        }
         if (uncertain.has(date)) {
           noSlotReason = `Plan remains provisional: ${uncertain.get(date)!.join(" ")}`;
           continue;
@@ -1659,7 +1782,10 @@ export function planTasks(
           cursor = Math.max(cursor, b.end);
         }
         if (cursor < limit) gaps.push({ start: cursor, end: limit });
-        for (const gap of gaps) {
+        const latestPreparationGap =
+          date === provisionalPreparationDate &&
+          task.linkedShiftId === preparationContext?.beforeShiftId;
+        for (const gap of latestPreparationGap ? [...gaps].reverse() : gaps) {
           const capacity =
             Math.floor((gap.end - gap.start) / MINUTE) - task.travelMinutes;
           if (capacity <= 0 || (!task.splittable && capacity < remaining))
@@ -1667,7 +1793,9 @@ export function planTasks(
           const minutes = task.splittable
             ? Math.min(capacity, remaining)
             : remaining;
-          const start = gap.start + task.travelMinutes * MINUTE,
+          const start = latestPreparationGap
+              ? gap.end - minutes * MINUTE
+              : gap.start + task.travelMinutes * MINUTE,
             end = start + minutes * MINUTE;
           parts.push({ start, end });
           remaining -= minutes;
@@ -1677,6 +1805,7 @@ export function planTasks(
       if (remaining > 0)
         result.push({ ...base, start: null, end: null, reason: noSlotReason });
       else {
+        parts.sort((a, b) => a.start - b.start || a.end - b.end);
         parts.forEach((p) =>
           block(
             p.start - task.travelMinutes * MINUTE,

@@ -289,6 +289,7 @@ function suggest(
       calculation.settings,
       suggestionClock,
       2,
+      calculation.taskContext,
     );
     let p = placements.find((p) => p.taskId === id);
     if (p?.start === null && activity === "meal") {
@@ -307,6 +308,7 @@ function suggest(
         calculation.settings,
         suggestionClock,
         2,
+        calculation.taskContext,
       );
       p = placements.find((p) => p.taskId === id);
     }

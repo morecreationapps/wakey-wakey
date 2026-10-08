@@ -24,6 +24,7 @@ import {
   onDate,
   zonedEpoch,
 } from "./time";
+import { beforeShiftSleepPreferences } from "./beforeShiftSleep";
 
 export type PreparationActivity =
   | "laundry"
@@ -201,7 +202,43 @@ export function preparationCalculationContext(
         },
       ];
   }
-  return { settings: calculated, entries: planningEntries, warnings };
+  let taskContext: { beforeShiftId: string } | undefined;
+  try {
+    const start = shift.start
+        ? zonedEpoch(shift.start, shift.timezone, shift.disambiguation)
+        : null,
+      preferences =
+        start !== null
+          ? beforeShiftSleepPreferences(shift, settings, start)
+          : null;
+    const selectedPlan = preferences
+        ? planShift(shift, calculated, planningEntries)
+        : null,
+      wind = selectedPlan?.events.find((e) => e.kind === "windDown")?.at;
+    if (
+      preferences &&
+      !preferences.missing.length &&
+      selectedPlan?.events.some((e) => e.kind === "wake") &&
+      selectedPlan.events.some((e) => e.kind === "bedtime") &&
+      wind !== undefined &&
+      localAt(wind, shift.timezone).slice(0, 10) ===
+        preferences.preparationDate &&
+      (!settings.restWake || !settings.restBed)
+    ) {
+      taskContext = { beforeShiftId: shift.id };
+      warnings.push(
+        "Your pre-shift sleep preferences protect the coming night's full sleep target, using the calculated bedtime or usual wake fallback for any blank field. Waking and sleep availability earlier on the preparation day are still unconfirmed; these are editable provisional timings near the bedtime routine, around recorded work and commitments. Review them before relying on the schedule.",
+      );
+    }
+  } catch {
+    /* The selected plan already reports invalid shift dates. */
+  }
+  return {
+    settings: calculated,
+    entries: planningEntries,
+    warnings,
+    taskContext,
+  };
 }
 
 /** A recurring checklist action must never complete its entire saved series. */
@@ -459,6 +496,14 @@ export function planPreparation(
         ]
       : [];
   availabilityIssues.push(...calculation.warnings);
+  if (beforeShiftSleepPreferences(next, settings, nextStart))
+    availabilityIssues.push(
+      ...plan.conflicts,
+      ...plan.missing.filter(
+        (m) =>
+          m.startsWith("Review bedtime") || m.startsWith("Review wake time"),
+      ),
+    );
   const block = (start: number, end: number, label: string) => {
     if (end > start) blocked.push({ start, end, label });
   };
@@ -951,6 +996,7 @@ export function planPreparation(
     calculation.settings,
     schedulerClock,
     horizon,
+    calculation.taskContext,
   );
   const mealBusy: Interval[] = [
     ...blocked,
@@ -1009,7 +1055,7 @@ export function planPreparation(
         const trial: Task = {
           ...task,
           earliest: localAt(chosen, settings.timezone),
-          deadline: localAt(upper, settings.timezone),
+          deadline: localAt(chosen + task.minutes * MINUTE, settings.timezone),
           scheduledStart: null,
           recurrence: "none",
         };
@@ -1026,6 +1072,7 @@ export function planPreparation(
           calculation.settings,
           schedulerClock,
           horizon,
+          calculation.taskContext,
         ).find((p) => p.taskId === task.id) ?? {
           taskId: task.id,
           start: null,

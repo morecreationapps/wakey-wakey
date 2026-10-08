@@ -87,8 +87,13 @@ export function SettingsFields({
       | "lateBed"
       | "lateWake"
       | "restBed"
-      | "restWake",
+      | "restWake"
+      | "beforeEarlyBed"
+      | "beforeEarlyWake"
+      | "beforeLateBed"
+      | "beforeLateWake",
     label: string,
+    optional = false,
   ) {
     return (
       <TimePickerField
@@ -98,8 +103,10 @@ export function SettingsFields({
         clockFormat={s.clockFormat}
         allowClear
         hint={
-          s[key] === null
-            ? "Still needed — affected plans stay provisional"
+          s[key] == null
+            ? optional
+              ? "Optional — leave blank to keep your existing preferences"
+              : "Still needed — affected plans stay provisional"
             : s.origins[key] === "suggested"
               ? "Suggested starting value — editable"
               : "Entered by you"
@@ -362,6 +369,32 @@ export function SettingsFields({
           {time("restBed", "Rest-day bedtime")}
           {time("restWake", "Rest-day wake")}
         </Row>
+        <Heading small>Night before an early shift</Heading>
+        <Body muted>
+          Bedtime is on the previous calendar day. Wake-up is on the early
+          shift’s date. These optional times are planning estimates and remain
+          editable.
+        </Body>
+        <Row>
+          {time("beforeEarlyBed", "Bedtime before an early shift", true)}
+          {time("beforeEarlyWake", "Wake-up for the early shift", true)}
+        </Row>
+        <Heading small>Night before a late shift</Heading>
+        <Body muted>
+          Bedtime is on the previous calendar day. Wake-up is on the late
+          shift’s date. Use these preferences for the night before your next
+          late duty.
+        </Body>
+        <Row>
+          {time("beforeLateBed", "Bedtime before a late shift", true)}
+          {time("beforeLateWake", "Wake-up for the late shift", true)}
+        </Row>
+        <Body muted>
+          You can set either time separately. A blank bedtime keeps the
+          calculated bedtime; a blank wake-up keeps your usual preferences. The
+          plan checks these times against your sleep target and work preparation
+          and flags conflicts.
+        </Body>
         <Body muted>
           Clear unknown times. Late-shift waking is based on your preferences
           and commitments, never simply the preparation deadline.
@@ -461,6 +494,10 @@ export function Setup({ state, change, notify }: ScreenProps) {
         "lateWake",
         "restBed",
         "restWake",
+        "beforeEarlyBed",
+        "beforeEarlyWake",
+        "beforeLateBed",
+        "beforeLateWake",
       ].some(
         (k) =>
           s[k as keyof Settings] &&
@@ -557,6 +594,26 @@ export function Setup({ state, change, notify }: ScreenProps) {
               {s.routines
                 .map((r) => `${r.name}: ${r.minutes ?? "?"} min`)
                 .join(", ") || "Still needed"}
+            </Body>
+            <Body>
+              Night before an early shift: bedtime{" "}
+              {s.beforeEarlyBed
+                ? formatPickerTime(s.beforeEarlyBed, s.clockFormat)
+                : "Not set"}{" "}
+              · wake-up{" "}
+              {s.beforeEarlyWake
+                ? formatPickerTime(s.beforeEarlyWake, s.clockFormat)
+                : "Not set"}
+            </Body>
+            <Body>
+              Night before a late shift: bedtime{" "}
+              {s.beforeLateBed
+                ? formatPickerTime(s.beforeLateBed, s.clockFormat)
+                : "Not set"}{" "}
+              · wake-up{" "}
+              {s.beforeLateWake
+                ? formatPickerTime(s.beforeLateWake, s.clockFormat)
+                : "Not set"}
             </Body>
             {p ? (
               <>

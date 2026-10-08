@@ -611,6 +611,44 @@ describe("reviewable import/export", () => {
 });
 
 describe("schema 1 backup validation", () => {
+  const beforeShiftKeys = [
+    "beforeEarlyBed",
+    "beforeEarlyWake",
+    "beforeLateBed",
+    "beforeLateWake",
+  ] as const;
+  it("preserves older account snapshots without before-shift sleep preferences", () => {
+    const old = initialState();
+    for (const key of beforeShiftKeys) delete old.settings[key];
+    expect(parseBackup(exportBackup(old))).toEqual(old);
+  });
+  it("round-trips separate before-shift preferences without changing ordinary rest-day times", () => {
+    const value = initialState();
+    Object.assign(value.settings, {
+      beforeEarlyBed: "21:30",
+      beforeEarlyWake: "05:00",
+      beforeLateBed: "23:30",
+      beforeLateWake: "07:00",
+      restBed: "22:45",
+      restWake: "08:30",
+    });
+    expect(parseBackup(exportBackup(value))).toEqual(value);
+  });
+  it.each(beforeShiftKeys)(
+    "validates optional %s before accepting a backup",
+    (key) => {
+      for (const invalid of ["24:00", "9:30", "", 2130, false]) {
+        const value = initialState();
+        (value.settings as unknown as Record<string, unknown>)[key] = invalid;
+        expect(() => parseBackup(JSON.stringify(value))).toThrow(
+          new RegExp(key),
+        );
+      }
+      const unknown = initialState();
+      unknown.settings[key] = null;
+      expect(parseBackup(exportBackup(unknown))).toEqual(unknown);
+    },
+  );
   const recurringTask = {
     id: "weekly-laundry",
     title: "Laundry",

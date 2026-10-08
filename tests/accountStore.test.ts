@@ -266,6 +266,40 @@ describe("trusted setup-pending access classification", () => {
 });
 
 describe("owner-scoped account snapshots", () => {
+  it("loads an older planner unchanged and saves new before-shift preferences across restart", async () => {
+    const older = preservedState();
+    for (const key of [
+      "beforeEarlyBed",
+      "beforeEarlyWake",
+      "beforeLateBed",
+      "beforeLateWake",
+    ] as const)
+      delete older.settings[key];
+    const c = cacheFixture(),
+      r = remoteFixture(JSON.stringify(older));
+    const store = create(OTHER, r.remote, c.cache).store;
+    expect(await store.loadState()).toEqual(older);
+    expect(r.remote.save).not.toHaveBeenCalled();
+    const updated: AppState = {
+      ...older,
+      settings: {
+        ...older.settings,
+        beforeEarlyBed: "21:30",
+        beforeEarlyWake: "05:00",
+        beforeLateBed: "23:30",
+        beforeLateWake: "07:00",
+      },
+    };
+    await store.saveState(updated);
+    expect(JSON.parse(r.payload()!)).toEqual(updated);
+    const restarted = create(OTHER, r.remote, c.cache).store;
+    expect(await restarted.loadState()).toEqual(updated);
+    expect(updated.entries).toEqual(older.entries);
+    expect(updated.tasks).toEqual(older.tasks);
+    expect(updated.sleepLogs).toEqual(older.sleepLogs);
+    expect(updated.settings.restBed).toBe(older.settings.restBed);
+    expect(updated.settings.restWake).toBe(older.settings.restWake);
+  });
   it.each(["empty", "cached"] as const)(
     "returns no cached, default or legacy planner while trusted setup is pending (%s device)",
     async (device) => {

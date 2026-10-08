@@ -37,6 +37,11 @@ export interface Settings {
   lateWake: string | null;
   restBed: string | null;
   restWake: string | null;
+  /** Bedtime on the previous calendar day; wake-up on the following shift day. */
+  beforeEarlyBed?: string | null;
+  beforeEarlyWake?: string | null;
+  beforeLateBed?: string | null;
+  beforeLateWake?: string | null;
   consistentWake: boolean;
   caffeine: boolean;
   caffeineBeforeBed?: number;

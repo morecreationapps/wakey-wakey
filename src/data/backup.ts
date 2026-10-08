@@ -180,6 +180,16 @@ export function validateBackup(value: unknown): AppState {
     "restWake",
   ])
     time(settings[key], `settings.${key}`, true);
+  // Older account snapshots omit these preferences. Retain them unchanged on
+  // restore, while validating every newly supplied value before a write.
+  for (const key of [
+    "beforeEarlyBed",
+    "beforeEarlyWake",
+    "beforeLateBed",
+    "beforeLateWake",
+  ])
+    if (settings[key] !== undefined)
+      time(settings[key], `settings.${key}`, true);
   array(settings.reminderKinds, "settings.reminderKinds", 20).forEach(
     (item, index) =>
       choice(
