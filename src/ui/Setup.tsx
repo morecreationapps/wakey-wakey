@@ -150,9 +150,8 @@ export function SettingsFields({
           values={["UK", "ISO", "LONG"]}
           value={s.dateFormat}
           onChange={(v) => put("dateFormat", v)}
-          labels={{ LONG: "Sat 10th October 2026" }}
+          labels={{ LONG: "Weekday, day, month & year" }}
         />
-        <Body muted>Long dates include the weekday, day and full month.</Body>
         <Body muted>Clock</Body>
         <Choices
           values={["24", "12"]}
