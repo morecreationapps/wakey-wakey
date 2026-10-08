@@ -18,6 +18,7 @@ import {
   outputFiles,
   PAGES_BASE_PATH,
 } from "./check-public-build.mjs";
+import { prepareWebInstall } from "./web-install.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -120,6 +121,7 @@ if (
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
   const output = join(projectRoot, "dist");
+  prepareWebInstall(output, PAGES_BASE_PATH);
   const assets = flattenPagesAssets(output);
   writeFileSync(join(output, ".nojekyll"), "");
   checkPublicSource(projectRoot);

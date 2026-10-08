@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkWebInstallOutput } from "./web-install.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 export const PAGES_BASE_PATH = "/wakey-wakey";
@@ -30,6 +31,7 @@ export function checkPublicSource(root = projectRoot) {
       "The public preview must retain publicReleaseReviewed=false.",
     );
   }
+  checkWebInstallOutput(join(root, "public"));
 }
 
 export function outputFiles(directory) {
@@ -80,7 +82,7 @@ export function checkPagesOutput(directory) {
         "Private input files are present in the deployment artifact.",
       );
     }
-    if (/\.(?:js|json|html|txt|map)$/.test(name)) {
+    if (/\.(?:js|json|webmanifest|html|txt|map)$/.test(name)) {
       const text = readFileSync(path, "utf8");
       if (/\d{2}\/\d{2}\/\d{4}:\s*Duty\s+\w+/i.test(text)) {
         throw new Error(
@@ -151,6 +153,7 @@ export function checkPagesOutput(directory) {
   if (!existsSync(join(output, ".nojekyll"))) {
     throw new Error("The Pages output is missing its .nojekyll marker.");
   }
+  checkWebInstallOutput(output, PAGES_BASE_PATH);
 }
 
 if (

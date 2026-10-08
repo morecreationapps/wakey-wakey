@@ -45,6 +45,7 @@ import { Plan } from "./src/ui/Plan";
 import { SettingsScreen } from "./src/ui/Settings";
 import { createHeaderFeedback } from "./src/ui/editFeedback";
 import { HeaderFeedback } from "./src/ui/HeaderFeedback";
+import { FooterNavigation } from "./src/ui/FooterNavigation";
 const tabs = [
   { name: "Today", icon: "sun" },
   { name: "Rota", icon: "calendar" },
@@ -113,7 +114,10 @@ export default function App() {
     <SafeAreaProvider>
       <Theme.Provider value={light}>
         <StatusBar style="dark" />
-        <SafeAreaView style={{ flex: 1, backgroundColor: light.bg }}>
+        <SafeAreaView
+          edges={["top", "right", "bottom", "left"]}
+          style={{ flex: 1, backgroundColor: light.bg }}
+        >
           {identity && store ? (
             <Planner
               key={identity.id}
@@ -295,197 +299,85 @@ function Planner({
   };
   const props = state ? { state, change, notify } : null;
   return (
-    <SafeAreaProvider>
-      <Theme.Provider value={c}>
-        <StatusBar style="dark" />
-        <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
-          <ErrorBoundary>
-            {!state ? (
-              <View style={{ padding: 40, gap: 18, backgroundColor: c.card }}>
-                <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
-                  Wakey-Wakey!
-                </Text>
-                <WhiteSurface.Provider value={true}>
-                  <Body>{loadError || "Opening your account planner…"}</Body>
-                </WhiteSurface.Provider>
-                {!!loadError && (
-                  <>
-                    <Button title="Retry reading saved data" onPress={load} />
-                    <Button
-                      title="Log out"
-                      secondary
-                      onPress={() => void leaveAccount()}
-                    />
-                  </>
-                )}
-              </View>
-            ) : (
-              <>
+    <Theme.Provider value={c}>
+      <StatusBar style="dark" />
+      <View style={{ flex: 1, backgroundColor: c.bg }}>
+        <ErrorBoundary>
+          {!state ? (
+            <View style={{ padding: 40, gap: 18, backgroundColor: c.card }}>
+              <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
+                Wakey-Wakey!
+              </Text>
+              <WhiteSurface.Provider value={true}>
+                <Body>{loadError || "Opening your account planner…"}</Body>
+              </WhiteSurface.Provider>
+              {!!loadError && (
+                <>
+                  <Button title="Retry reading saved data" onPress={load} />
+                  <Button
+                    title="Log out"
+                    secondary
+                    onPress={() => void leaveAccount()}
+                  />
+                </>
+              )}
+            </View>
+          ) : (
+            <>
+              <View
+                style={{
+                  height: 76,
+                  paddingHorizontal: wide ? 36 : 20,
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                  borderBottomWidth: 1,
+                  borderColor: c.line,
+                  backgroundColor: c.card,
+                }}
+              >
                 <View
                   style={{
-                    height: 76,
-                    paddingHorizontal: wide ? 36 : 20,
                     flexDirection: "row",
-                    justifyContent: "space-between",
                     alignItems: "center",
-                    gap: 12,
-                    borderBottomWidth: 1,
-                    borderColor: c.line,
-                    backgroundColor: c.card,
+                    gap: 11,
+                    flexShrink: 1,
+                    minWidth: 0,
                   }}
                 >
-                  <View
+                  <Image
+                    source={require("./assets/wakey-wakey-icon.png")}
+                    style={{ width: 44, height: 44, flexShrink: 0 }}
+                    resizeMode="contain"
+                    accessible={false}
+                  />
+                  <Image
+                    source={require("./assets/wakey-wakey-wordmark.png")}
                     style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 11,
+                      width: 168,
+                      height: 40,
                       flexShrink: 1,
                       minWidth: 0,
                     }}
-                  >
-                    <Image
-                      source={require("./assets/wakey-wakey-icon.png")}
-                      style={{ width: 44, height: 44, flexShrink: 0 }}
-                      resizeMode="contain"
-                      accessible={false}
-                    />
-                    <Image
-                      source={require("./assets/wakey-wakey-wordmark.png")}
-                      style={{
-                        width: 168,
-                        height: 40,
-                        flexShrink: 1,
-                        minWidth: 0,
-                      }}
-                      resizeMode="contain"
-                      accessibilityLabel="Wakey-Wakey!"
-                    />
-                  </View>
-                  <HeaderFeedback
-                    controller={feedback}
-                    onUndo={undo}
-                    allowUndo={state.settings.onboardingComplete}
+                    resizeMode="contain"
+                    accessibilityLabel="Wakey-Wakey!"
                   />
                 </View>
-                <View style={{ flex: 1, flexDirection: "row" }}>
-                  {wide && state.settings.onboardingComplete && (
-                    <View
-                      style={{
-                        width: 200,
-                        padding: 22,
-                        gap: 9,
-                        borderRightWidth: 1,
-                        borderColor: c.line,
-                        backgroundColor: c.card,
-                      }}
-                    >
-                      {tabs.map((t) => (
-                        <Pressable
-                          key={t.name}
-                          accessibilityRole="button"
-                          accessibilityLabel={t.name}
-                          accessibilityState={{ selected: tab === t.name }}
-                          aria-pressed={tab === t.name}
-                          onPress={() => navigate(t.name)}
-                          onFocus={() => setFocusedControl(`side-${t.name}`)}
-                          onBlur={() => setFocusedControl("")}
-                          style={({ pressed }) => ({
-                            flexDirection: "row",
-                            alignItems: "center",
-                            gap: 13,
-                            padding: 16,
-                            borderRadius: 13,
-                            backgroundColor: c.accent,
-                            outlineColor:
-                              focusedControl === `side-${t.name}`
-                                ? c.accent
-                                : c.onAccent,
-                            outlineStyle: "solid",
-                            outlineOffset:
-                              focusedControl === `side-${t.name}` ? 2 : -4,
-                            transform: [{ translateY: pressed ? 1 : 0 }],
-                            outlineWidth:
-                              pressed ||
-                              tab === t.name ||
-                              focusedControl === `side-${t.name}`
-                                ? 2
-                                : 0,
-                          })}
-                        >
-                          <Icon name={t.icon} size={20} colour={c.onAccent} />
-                          <Text
-                            style={{
-                              fontSize: 14,
-                              fontWeight: tab === t.name ? "700" : "500",
-                              color: c.onAccent,
-                              textDecorationLine:
-                                tab === t.name ? "underline" : "none",
-                            }}
-                          >
-                            {t.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                      <View style={{ flex: 1 }} />
-                      <Text
-                        style={{ fontSize: 11, color: c.muted, lineHeight: 18 }}
-                      >
-                        Your time, thoughtfully planned.{"\n"}Your own account.
-                      </Text>
-                    </View>
-                  )}
-                  <ScrollView
-                    ref={scroll}
-                    style={{ flex: 1, backgroundColor: c.bg }}
-                    contentContainerStyle={{
-                      backgroundColor: c.bg,
-                      padding: wide ? 32 : 18,
-                      paddingBottom: 40,
-                    }}
-                    keyboardShouldPersistTaps="handled"
-                  >
-                    <View
-                      style={{
-                        maxWidth: 1150,
-                        width: "100%",
-                        alignSelf: "center",
-                      }}
-                    >
-                      {!state.settings.onboardingComplete ? (
-                        <Setup {...props!} />
-                      ) : tab === "Today" ? (
-                        <Today {...props!} navigate={navigate} />
-                      ) : tab === "Rota" ? (
-                        <Rota {...props!} />
-                      ) : tab === "Plan" ? (
-                        <Plan {...props!} />
-                      ) : tab === "Sleep" ? (
-                        <Sleep {...props!} />
-                      ) : (
-                        <SettingsScreen
-                          {...props!}
-                          saveAccount={(a) =>
-                            accountOperation(() => store.saveState(a))
-                          }
-                          resetAccount={() =>
-                            accountOperation(() => store.deleteState())
-                          }
-                          accountEmail={identity.email}
-                          accountId={identity.id}
-                          logout={leaveAccount}
-                        />
-                      )}
-                    </View>
-                  </ScrollView>
-                </View>
-                {!wide && state.settings.onboardingComplete && (
+                <HeaderFeedback
+                  controller={feedback}
+                  onUndo={undo}
+                  allowUndo={state.settings.onboardingComplete}
+                />
+              </View>
+              <View style={{ flex: 1, flexDirection: "row" }}>
+                {wide && state.settings.onboardingComplete && (
                   <View
                     style={{
-                      flexDirection: "row",
-                      justifyContent: "space-around",
-                      paddingTop: 9,
-                      paddingBottom: 7,
-                      borderTopWidth: 1,
+                      width: 200,
+                      padding: 22,
+                      gap: 9,
+                      borderRightWidth: 1,
                       borderColor: c.line,
                       backgroundColor: c.card,
                     }}
@@ -498,36 +390,36 @@ function Planner({
                         accessibilityState={{ selected: tab === t.name }}
                         aria-pressed={tab === t.name}
                         onPress={() => navigate(t.name)}
-                        onFocus={() => setFocusedControl(`bottom-${t.name}`)}
+                        onFocus={() => setFocusedControl(`side-${t.name}`)}
                         onBlur={() => setFocusedControl("")}
                         style={({ pressed }) => ({
+                          flexDirection: "row",
                           alignItems: "center",
-                          gap: 5,
-                          minWidth: 54,
-                          padding: 7,
-                          borderRadius: 11,
+                          gap: 13,
+                          padding: 16,
+                          borderRadius: 13,
                           backgroundColor: c.accent,
                           outlineColor:
-                            focusedControl === `bottom-${t.name}`
+                            focusedControl === `side-${t.name}`
                               ? c.accent
                               : c.onAccent,
                           outlineStyle: "solid",
                           outlineOffset:
-                            focusedControl === `bottom-${t.name}` ? 2 : -3,
+                            focusedControl === `side-${t.name}` ? 2 : -4,
                           transform: [{ translateY: pressed ? 1 : 0 }],
                           outlineWidth:
                             pressed ||
                             tab === t.name ||
-                            focusedControl === `bottom-${t.name}`
+                            focusedControl === `side-${t.name}`
                               ? 2
                               : 0,
                         })}
                       >
-                        <Icon name={t.icon} size={21} colour={c.onAccent} />
+                        <Icon name={t.icon} size={20} colour={c.onAccent} />
                         <Text
                           style={{
-                            fontSize: 10,
-                            fontWeight: tab === t.name ? "700" : "600",
+                            fontSize: 14,
+                            fontWeight: tab === t.name ? "700" : "500",
                             color: c.onAccent,
                             textDecorationLine:
                               tab === t.name ? "underline" : "none",
@@ -537,37 +429,91 @@ function Planner({
                         </Text>
                       </Pressable>
                     ))}
+                    <View style={{ flex: 1 }} />
+                    <Text
+                      style={{ fontSize: 11, color: c.muted, lineHeight: 18 }}
+                    >
+                      Your time, thoughtfully planned.{"\n"}Your own account.
+                    </Text>
                   </View>
                 )}
-                {!!message && (
-                  <Pressable
-                    accessibilityRole="alert"
-                    onPress={() => setMessage("")}
+                <ScrollView
+                  ref={scroll}
+                  style={{ flex: 1, backgroundColor: c.bg }}
+                  contentContainerStyle={{
+                    backgroundColor: c.bg,
+                    padding: wide ? 32 : 18,
+                    paddingBottom: 40,
+                  }}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View
                     style={{
-                      position: "absolute",
-                      left: wide ? 240 : 16,
-                      right: 16,
-                      bottom:
-                        state.settings.onboardingComplete && !wide ? 85 : 20,
-                      backgroundColor: c.card,
-                      borderRadius: 16,
-                      padding: 18,
-                      borderWidth: 1,
-                      borderColor: c.accent,
+                      maxWidth: 1150,
+                      width: "100%",
+                      alignSelf: "center",
                     }}
                   >
-                    <Text
-                      style={{ color: c.ink, fontSize: 13, lineHeight: 20 }}
-                    >
-                      {message}
-                    </Text>
-                  </Pressable>
-                )}
-              </>
-            )}
-          </ErrorBoundary>
-        </SafeAreaView>
-      </Theme.Provider>
-    </SafeAreaProvider>
+                    {!state.settings.onboardingComplete ? (
+                      <Setup {...props!} />
+                    ) : tab === "Today" ? (
+                      <Today {...props!} navigate={navigate} />
+                    ) : tab === "Rota" ? (
+                      <Rota {...props!} />
+                    ) : tab === "Plan" ? (
+                      <Plan {...props!} />
+                    ) : tab === "Sleep" ? (
+                      <Sleep {...props!} />
+                    ) : (
+                      <SettingsScreen
+                        {...props!}
+                        saveAccount={(a) =>
+                          accountOperation(() => store.saveState(a))
+                        }
+                        resetAccount={() =>
+                          accountOperation(() => store.deleteState())
+                        }
+                        accountEmail={identity.email}
+                        accountId={identity.id}
+                        logout={leaveAccount}
+                      />
+                    )}
+                  </View>
+                </ScrollView>
+              </View>
+              {!wide && state.settings.onboardingComplete && (
+                <FooterNavigation
+                  items={tabs}
+                  activeTab={tab}
+                  onNavigate={navigate}
+                />
+              )}
+              {!!message && (
+                <Pressable
+                  accessibilityRole="alert"
+                  onPress={() => setMessage("")}
+                  style={{
+                    position: "absolute",
+                    left: wide ? 240 : 16,
+                    right: 16,
+                    bottom:
+                      state.settings.onboardingComplete && !wide ? 85 : 20,
+                    backgroundColor: c.card,
+                    borderRadius: 16,
+                    padding: 18,
+                    borderWidth: 1,
+                    borderColor: c.accent,
+                  }}
+                >
+                  <Text style={{ color: c.ink, fontSize: 13, lineHeight: 20 }}>
+                    {message}
+                  </Text>
+                </Pressable>
+              )}
+            </>
+          )}
+        </ErrorBoundary>
+      </View>
+    </Theme.Provider>
   );
 }
