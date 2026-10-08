@@ -99,6 +99,36 @@ export interface AccountStoreStatus {
   migration: "none" | "eligible" | "verified" | "completed";
   message: string;
 }
+export interface AccountSnapshotSummary {
+  revision: number;
+  rotaEntries: number;
+  tasks: number;
+  sleepLogs: number;
+  onboardingComplete: boolean;
+}
+export interface AccountConflictReview {
+  ownerId: string;
+  /** Bound to the exact versions reviewed by this store; not an auth credential. */
+  token: string;
+  device: { payload: string; summary: AccountSnapshotSummary };
+  account: { payload: string; summary: AccountSnapshotSummary };
+  recoveryKeys: { device: string; account: string };
+}
+export type AccountConflictRecovery = Pick<
+  AccountConflictReview,
+  "ownerId" | "device" | "account" | "recoveryKeys"
+>;
+export interface AccountConflictRecoveryRecord {
+  version: 1;
+  ownerId: string;
+  source: "device" | "account";
+  reviewToken: string;
+  revision: number;
+  payload: string;
+  payloadDigest: string;
+  /** Retains the original pending envelope and its migration receipt exactly. */
+  deviceCache?: string;
+}
 interface CacheEnvelope {
   version: 1;
   ownerId: string;
@@ -179,6 +209,7 @@ export function createAccountStore(options: {
     );
   const key = `${ACCOUNT_CACHE_PREFIX}${userId.toLowerCase()}`;
   const backupKey = `${key}:legacy-backup:v1`;
+  const recoveryIndexKey = `${key}:conflict-backup:v1:latest`;
   let current: CacheEnvelope | null = null;
   let status: AccountStoreStatus = {
     loaded: false,
@@ -197,8 +228,7 @@ export function createAccountStore(options: {
     });
     return next;
   };
-  async function readCache(): Promise<CacheEnvelope | null> {
-    const raw = await cache.getItem(key);
+  function parseCache(raw: string | null): CacheEnvelope | null {
     if (raw === null) return null;
     let value: CacheEnvelope;
     try {
@@ -227,6 +257,9 @@ export function createAccountStore(options: {
       );
     parseBackup(value.payload);
     return value;
+  }
+  async function readCache(): Promise<CacheEnvelope | null> {
+    return parseCache(await cache.getItem(key));
   }
   async function writeCache(value: CacheEnvelope): Promise<void> {
     try {
@@ -309,21 +342,399 @@ export function createAccountStore(options: {
       } satisfies LegacyBackup),
     );
   }
+  async function readMigrationStatus(): Promise<MigrationStatus> {
+    const migration = await remote.migrationStatus();
+    if (
+      !migration ||
+      typeof migration.eligible !== "boolean" ||
+      typeof migration.completed !== "boolean" ||
+      (migration.digest !== undefined && !digestValid(migration.digest))
+    )
+      throw new AccountStoreError(
+        "CORRUPT_DATA",
+        "The migration eligibility response is invalid.",
+      );
+    return {
+      eligible: migration.eligible,
+      completed: migration.completed,
+      ...(migration.digest ? { digest: migration.digest } : {}),
+    };
+  }
+  async function verifyMigrationReceipt(
+    cached: CacheEnvelope | null,
+    loaded: RemoteSnapshot,
+    migration: MigrationStatus,
+  ): Promise<string | undefined> {
+    let migrationDigest = cached?.migrationDigest;
+    if (
+      migration.completed &&
+      migration.digest &&
+      migrationDigest &&
+      migration.digest !== migrationDigest
+    )
+      throw new AccountStoreError(
+        "CORRUPT_DATA",
+        "This device’s migration receipt does not match the server. Existing records have been retained.",
+      );
+    if (
+      migration.completed &&
+      migration.digest === migrationDigest &&
+      migrationDigest
+    )
+      status = { ...status, migration: "verified" };
+    // If the migration response was lost, verify the retained backup against
+    // the persisted original before creating this device's verification receipt.
+    if (migration.completed && migration.digest && !migrationDigest) {
+      const rawBackup = await cache.getItem(backupKey);
+      if (rawBackup !== null) {
+        let backup: LegacyBackup;
+        try {
+          backup = JSON.parse(rawBackup) as LegacyBackup;
+        } catch {
+          throw new AccountStoreError(
+            "CORRUPT_DATA",
+            "The retained migration backup could not be read. It has been retained.",
+          );
+        }
+        if (
+          backup?.version !== 1 ||
+          backup.ownerId !== userId ||
+          backup.digest !== migration.digest ||
+          typeof backup.payload !== "string" ||
+          (await hash(backup.payload)) !== migration.digest
+        )
+          throw new AccountStoreError(
+            "CORRUPT_DATA",
+            "The retained migration backup does not match the server receipt. Original records have been retained.",
+          );
+        parseBackup(backup.payload);
+        if (
+          loaded.payload !== null &&
+          (await hash(loaded.payload)) === migration.digest &&
+          sameSnapshot(loaded.payload, backup.payload)
+        ) {
+          migrationDigest = migration.digest;
+          status = { ...status, migration: "verified" };
+        } else if (loaded.revision <= 1) {
+          throw new AccountStoreError(
+            "CORRUPT_DATA",
+            "The persisted migration records do not match the original backup. Migration has not been marked verified on this device.",
+          );
+        }
+        // A later revision may contain real edits: do not replace or reimport it.
+      }
+    }
+    return migrationDigest;
+  }
+  const conflictReviews = new Map<
+    string,
+    {
+      review: string;
+      signature: string;
+      records: { device: string; account: string };
+    }
+  >();
+  const staleReview = () =>
+    new AccountStoreError(
+      "CONFLICT",
+      "The reviewed versions have changed or this review belongs to another account. Review both versions again. Your pending changes and account records have been retained.",
+    );
+  async function checkedHash(value: string): Promise<string> {
+    const digest = await hash(value);
+    if (!digestValid(digest))
+      throw new AccountStoreError(
+        "CORRUPT_DATA",
+        "The recovery copy could not be verified. Both original versions have been retained.",
+      );
+    return digest;
+  }
+  async function readConflictContext() {
+    const cachedRaw = await cache.getItem(key);
+    const cached = parseCache(cachedRaw);
+    // These calls use the same authenticated backend gates as normal loading.
+    const migration = await readMigrationStatus();
+    const loaded = validateRemote(await remote.load());
+    if (cached && loaded.revision < cached.revision)
+      throw new AccountStoreError(
+        "CONFLICT",
+        "Previously saved account records are missing or older on the server. Your device copy and any pending changes have been retained. Reconnect or contact support before saving again.",
+      );
+    const migrationDigest = await verifyMigrationReceipt(
+      cached,
+      loaded,
+      migration,
+    );
+    if ((await cache.getItem(key)) !== cachedRaw) throw staleReview();
+    if (migration.eligible && !migration.completed)
+      throw new AccountStoreError(
+        "MIGRATION_REQUIRED",
+        "This account's original planner must finish migration before conflict recovery. Existing records and backups have been retained.",
+      );
+    if (
+      cachedRaw === null ||
+      !cached?.dirty ||
+      loaded.payload === null ||
+      loaded.revision <= cached.revision ||
+      sameSnapshot(loaded.payload, cached.payload)
+    )
+      throw staleReview();
+    const account = { payload: loaded.payload, revision: loaded.revision };
+    return {
+      cached,
+      cachedRaw,
+      account,
+      migrationDigest,
+      signature: JSON.stringify({
+        ownerId: userId,
+        deviceCache: cachedRaw,
+        account,
+        migration,
+      }),
+    };
+  }
+  function snapshotSummary(
+    payload: string,
+    revision: number,
+  ): AccountSnapshotSummary {
+    const state = parseBackup(payload);
+    return {
+      revision,
+      rotaEntries: state.entries.length,
+      tasks: state.tasks.length,
+      sleepLogs: state.sleepLogs.length,
+      onboardingComplete: state.settings.onboardingComplete,
+    };
+  }
+  async function reviewConflict(): Promise<AccountConflictReview> {
+    return serial(async () => {
+      const context = await readConflictContext();
+      const token = await checkedHash(context.signature);
+      const makeRecord = async (
+        source: "device" | "account",
+        payload: string,
+        revision: number,
+      ) => {
+        const record: AccountConflictRecoveryRecord = {
+          version: 1,
+          ownerId: userId,
+          source,
+          reviewToken: token,
+          revision,
+          payload,
+          payloadDigest: await checkedHash(payload),
+          ...(source === "device" ? { deviceCache: context.cachedRaw } : {}),
+        };
+        const text = JSON.stringify(record);
+        return {
+          text,
+          key: `${key}:conflict-backup:v1:${source}:${await checkedHash(text)}`,
+        };
+      };
+      const device = await makeRecord(
+        "device",
+        context.cached.payload,
+        context.cached.revision,
+      );
+      const account = await makeRecord(
+        "account",
+        context.account.payload,
+        context.account.revision,
+      );
+      const review: AccountConflictReview = {
+        ownerId: userId,
+        token,
+        device: {
+          payload: context.cached.payload,
+          summary: snapshotSummary(
+            context.cached.payload,
+            context.cached.revision,
+          ),
+        },
+        account: {
+          payload: context.account.payload,
+          summary: snapshotSummary(
+            context.account.payload,
+            context.account.revision,
+          ),
+        },
+        recoveryKeys: { device: device.key, account: account.key },
+      };
+      conflictReviews.set(token, {
+        review: JSON.stringify(review),
+        signature: context.signature,
+        records: { device: device.text, account: account.text },
+      });
+      return review;
+    });
+  }
+  async function preserveRecoveryRecord(
+    recoveryKey: string,
+    text: string,
+  ): Promise<void> {
+    try {
+      const previous = await cache.getItem(recoveryKey);
+      if (previous !== null && previous !== text)
+        throw new Error("Recovery copy address is already occupied");
+      if (previous === null) await cache.setItem(recoveryKey, text);
+      if ((await cache.getItem(recoveryKey)) !== text)
+        throw new Error("Recovery copy read-back did not match");
+    } catch {
+      throw new AccountStoreError(
+        "CACHE_ERROR",
+        "Both recovery copies could not be preserved and verified on this device. The active device version and account records have been retained.",
+      );
+    }
+  }
+  async function preserveRecoveryIndex(review: AccountConflictReview) {
+    const text = JSON.stringify({
+      version: 1,
+      ownerId: userId,
+      reviewToken: review.token,
+      recoveryKeys: review.recoveryKeys,
+    });
+    try {
+      await cache.setItem(recoveryIndexKey, text);
+      if ((await cache.getItem(recoveryIndexKey)) !== text)
+        throw new Error("Recovery index read-back did not match");
+    } catch {
+      throw new AccountStoreError(
+        "CACHE_ERROR",
+        "The recovery copies could not be indexed and verified. The active device version and account records have been retained.",
+      );
+    }
+  }
+  async function readConflictRecovery(): Promise<AccountConflictRecovery | null> {
+    return serial(async () => {
+      const raw = await cache.getItem(recoveryIndexKey);
+      if (raw === null) return null;
+      const invalid = () =>
+        new AccountStoreError(
+          "CORRUPT_DATA",
+          "The retained recovery copies could not be verified for this account. Existing records have been retained.",
+        );
+      let index: {
+        version: number;
+        ownerId: string;
+        reviewToken: string;
+        recoveryKeys: { device: string; account: string };
+      };
+      try {
+        index = JSON.parse(raw);
+      } catch {
+        throw invalid();
+      }
+      if (
+        index?.version !== 1 ||
+        index.ownerId !== userId ||
+        !digestValid(index.reviewToken) ||
+        typeof index.recoveryKeys?.device !== "string" ||
+        typeof index.recoveryKeys?.account !== "string"
+      )
+        throw invalid();
+      const readRecord = async (source: "device" | "account") => {
+        const recoveryKey = index.recoveryKeys[source];
+        if (!recoveryKey.startsWith(`${key}:conflict-backup:v1:${source}:`))
+          throw invalid();
+        const recordRaw = await cache.getItem(recoveryKey);
+        if (recordRaw === null) throw invalid();
+        let record: AccountConflictRecoveryRecord;
+        try {
+          record = JSON.parse(recordRaw);
+        } catch {
+          throw invalid();
+        }
+        if (
+          record?.version !== 1 ||
+          record.ownerId !== userId ||
+          record.source !== source ||
+          record.reviewToken !== index.reviewToken ||
+          !Number.isSafeInteger(record.revision) ||
+          record.revision < 0 ||
+          typeof record.payload !== "string" ||
+          record.payloadDigest !== (await checkedHash(record.payload)) ||
+          recoveryKey !==
+            `${key}:conflict-backup:v1:${source}:${await checkedHash(recordRaw)}`
+        )
+          throw invalid();
+        if (source === "device") {
+          if (typeof record.deviceCache !== "string") throw invalid();
+          const original = parseCache(record.deviceCache);
+          if (
+            !original?.dirty ||
+            original.payload !== record.payload ||
+            original.revision !== record.revision
+          )
+            throw invalid();
+        } else if (record.deviceCache !== undefined) throw invalid();
+        return {
+          payload: record.payload,
+          summary: snapshotSummary(record.payload, record.revision),
+        };
+      };
+      const device = await readRecord("device");
+      const account = await readRecord("account");
+      return {
+        ownerId: userId,
+        device,
+        account,
+        recoveryKeys: { ...index.recoveryKeys },
+      };
+    });
+  }
+  async function resolveConflictWithAccount(
+    review: AccountConflictReview,
+  ): Promise<AppState> {
+    return serial(async () => {
+      const issued = review && conflictReviews.get(review.token);
+      if (
+        !issued ||
+        review.ownerId !== userId ||
+        issued.review !== JSON.stringify(review)
+      )
+        throw staleReview();
+      let context = await readConflictContext();
+      if (issued.signature !== context.signature) throw staleReview();
+      await preserveRecoveryRecord(
+        review.recoveryKeys.device,
+        issued.records.device,
+      );
+      await preserveRecoveryRecord(
+        review.recoveryKeys.account,
+        issued.records.account,
+      );
+      await preserveRecoveryIndex(review);
+      // Recheck after the asynchronous backup writes; another device may have
+      // saved, or this browser may have edited its pending copy while awaiting I/O.
+      context = await readConflictContext();
+      if (
+        issued.signature !== context.signature ||
+        (await cache.getItem(key)) !== context.cachedRaw
+      )
+        throw staleReview();
+      await writeCache(
+        envelope(
+          context.account.payload,
+          context.account.revision,
+          false,
+          context.migrationDigest,
+        ),
+      );
+      conflictReviews.delete(review.token);
+      status = {
+        ...status,
+        offline: false,
+        message:
+          "The saved account version is open. Both original versions were preserved in recovery copies on this device.",
+      };
+      return parseBackup(context.account.payload);
+    });
+  }
   async function loadState(): Promise<AppState> {
     return serial(async () => {
       const cached = await readCache();
       try {
         // Never inspect/import legacy information without a trusted backend grant.
-        const migration = await remote.migrationStatus();
-        if (
-          typeof migration.eligible !== "boolean" ||
-          typeof migration.completed !== "boolean" ||
-          (migration.digest !== undefined && !digestValid(migration.digest))
-        )
-          throw new AccountStoreError(
-            "CORRUPT_DATA",
-            "The migration eligibility response is invalid.",
-          );
+        const migration = await readMigrationStatus();
         status = {
           ...status,
           migration: migration.completed
@@ -338,65 +749,11 @@ export function createAccountStore(options: {
             "CONFLICT",
             "Previously saved account records are missing or older on the server. Your device copy and any pending changes have been retained. Reconnect or contact support before saving again.",
           );
-        let migrationDigest = cached?.migrationDigest;
-        if (
-          migration.completed &&
-          migration.digest &&
-          migrationDigest &&
-          migration.digest !== migrationDigest
-        )
-          throw new AccountStoreError(
-            "CORRUPT_DATA",
-            "This device’s migration receipt does not match the server. Existing records have been retained.",
-          );
-        if (
-          migration.completed &&
-          migration.digest === migrationDigest &&
-          migrationDigest
-        )
-          status = { ...status, migration: "verified" };
-        // If the migration response was lost, verify the retained backup against
-        // the persisted original before creating this device's verification receipt.
-        if (migration.completed && migration.digest && !migrationDigest) {
-          const rawBackup = await cache.getItem(backupKey);
-          if (rawBackup !== null) {
-            let backup: LegacyBackup;
-            try {
-              backup = JSON.parse(rawBackup) as LegacyBackup;
-            } catch {
-              throw new AccountStoreError(
-                "CORRUPT_DATA",
-                "The retained migration backup could not be read. It has been retained.",
-              );
-            }
-            if (
-              backup?.version !== 1 ||
-              backup.ownerId !== userId ||
-              backup.digest !== migration.digest ||
-              typeof backup.payload !== "string" ||
-              (await hash(backup.payload)) !== migration.digest
-            )
-              throw new AccountStoreError(
-                "CORRUPT_DATA",
-                "The retained migration backup does not match the server receipt. Original records have been retained.",
-              );
-            parseBackup(backup.payload);
-            if (
-              loaded.payload !== null &&
-              (await hash(loaded.payload)) === migration.digest &&
-              sameSnapshot(loaded.payload, backup.payload)
-            ) {
-              migrationDigest = migration.digest;
-              status = { ...status, migration: "verified" };
-            } else if (loaded.revision <= 1) {
-              throw new AccountStoreError(
-                "CORRUPT_DATA",
-                "The persisted migration records do not match the original backup. Migration has not been marked verified on this device.",
-              );
-            }
-            // A later revision may contain real edits: do not replace or reimport it.
-          }
-        }
+        let migrationDigest = await verifyMigrationReceipt(
+          cached,
+          loaded,
+          migration,
+        );
         if (migration.eligible && !migration.completed) {
           const legacy = await readLegacy();
           if (legacy === null)
@@ -547,6 +904,9 @@ export function createAccountStore(options: {
   return {
     loadState,
     saveState,
+    reviewConflict,
+    resolveConflictWithAccount,
+    readConflictRecovery,
     /** Resets only this account through compare-and-swap; legacy backup/data remain. */
     deleteState: () => saveState(initialState()),
     status: (): AccountStoreStatus => ({ ...status }),

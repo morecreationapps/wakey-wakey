@@ -24,6 +24,33 @@ describe("temporary header feedback", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("opening the recovered account version discards device Undo and stale save completions", () => {
+    const feedback = createHeaderFeedback<{ value: number }>();
+    feedback.edit(state(1), state(2));
+    const failedSave = feedback.beginSave();
+    feedback.failed(failedSave);
+    expect(feedback.getSnapshot().canUndo).toBe(true);
+
+    feedback.opened({ offline: false });
+    expect(feedback.getSnapshot()).toEqual({ status: "", canUndo: false });
+    expect(feedback.undo()).toBeUndefined();
+    expect(feedback.saved(failedSave, { offline: false })).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+
+    feedback.edit(state(10), state(11));
+    expect(feedback.undo()).toEqual(state(10));
+  });
+
+  it("opening an offline copy shows pending sync without claiming an account save", () => {
+    const feedback = createHeaderFeedback();
+    feedback.opened({ offline: true });
+    expect(feedback.getSnapshot()).toEqual({
+      status: "Saved on device · sync pending",
+      canUndo: false,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("keeps Saving visible until completion, then shows success for exactly three seconds", () => {
     const feedback = createHeaderFeedback();
     feedback.edit(state(0), state(1));

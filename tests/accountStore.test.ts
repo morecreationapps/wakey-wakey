@@ -9,6 +9,7 @@ import {
   createAccountStore,
   accountAccessError,
   handleAccountAccessDenied,
+  type AccountConflictRecoveryRecord,
 } from "../src/auth/accountStore";
 import type { AccountCache } from "../src/platform/accountCache";
 import {
@@ -805,5 +806,390 @@ describe("owner-scoped account snapshots", () => {
     await pendingSave;
     expect(await reload).toEqual(preservedState());
     expect(r.revision()).toBe(1);
+  });
+});
+
+describe("preserved account-version conflict recovery", () => {
+  async function conflictFixture() {
+    const c = cacheFixture();
+    const r = remoteFixture(JSON.stringify(initialState()));
+    const original = create(OTHER, r.remote, c.cache).store;
+    await original.loadState();
+    const device = preservedState();
+    device.settings.name = "Pending device changes";
+    vi.mocked(r.remote.save).mockRejectedValueOnce(
+      new AccountStoreError("NETWORK_ERROR", "Offline"),
+    );
+    await original.saveState(device);
+    const account = preservedState();
+    account.settings.name = "Saved account changes";
+    account.tasks = [];
+    await r.remote.save(JSON.stringify(account), 1);
+    vi.mocked(r.remote.save).mockClear();
+    const store = create(OTHER, r.remote, c.cache).store;
+    await expect(store.loadState()).rejects.toMatchObject({ code: "CONFLICT" });
+    return {
+      ...c,
+      ...r,
+      store,
+      device,
+      account,
+      activeKey: `${ACCOUNT_CACHE_PREFIX}${OTHER}`,
+      originalCache: c.values.get(`${ACCOUNT_CACHE_PREFIX}${OTHER}`)!,
+    };
+  }
+
+  it("reviews exact account-scoped versions without changing either original", async () => {
+    const f = await conflictFixture();
+    const before = new Map(f.values);
+    const review = await f.store.reviewConflict();
+    expect(review.ownerId).toBe(OTHER);
+    expect(review.token).toMatch(/^[a-f0-9]{64}$/);
+    expect(review.device.payload).toBe(JSON.stringify(f.device));
+    expect(review.account.payload).toBe(JSON.stringify(f.account));
+    expect(review.device.summary).toEqual({
+      revision: 1,
+      rotaEntries: 1,
+      tasks: 1,
+      sleepLogs: 1,
+      onboardingComplete: true,
+    });
+    expect(review.account.summary).toMatchObject({ revision: 2, tasks: 0 });
+    expect(review.recoveryKeys.device).toContain(
+      `${f.activeKey}:conflict-backup:v1:device:`,
+    );
+    expect(f.values).toEqual(before);
+    expect(f.payload()).toBe(JSON.stringify(f.account));
+    expect(f.remote.save).not.toHaveBeenCalled();
+    expect(await f.store.readConflictRecovery()).toBeNull();
+  });
+
+  it("preserves exact originals and opens the saved account version without a server write", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    expect(await f.store.resolveConflictWithAccount(review)).toEqual(f.account);
+    expect(f.store.status()).toMatchObject({
+      loaded: true,
+      dirty: false,
+      revision: 2,
+      offline: false,
+    });
+    const deviceRecord = JSON.parse(
+      f.values.get(review.recoveryKeys.device)!,
+    ) as AccountConflictRecoveryRecord;
+    const accountRecord = JSON.parse(
+      f.values.get(review.recoveryKeys.account)!,
+    ) as AccountConflictRecoveryRecord;
+    expect(deviceRecord).toMatchObject({
+      ownerId: OTHER,
+      source: "device",
+      payload: JSON.stringify(f.device),
+      revision: 1,
+      deviceCache: f.originalCache,
+    });
+    expect(deviceRecord.payloadDigest).toBe(
+      await hash(JSON.stringify(f.device)),
+    );
+    expect(accountRecord).toMatchObject({
+      ownerId: OTHER,
+      source: "account",
+      payload: JSON.stringify(f.account),
+      revision: 2,
+    });
+    expect(accountRecord.deviceCache).toBeUndefined();
+    expect(JSON.parse(f.values.get(f.activeKey)!)).toMatchObject({
+      dirty: false,
+      revision: 2,
+      payload: JSON.stringify(f.account),
+    });
+    expect(f.payload()).toBe(JSON.stringify(f.account));
+    expect(f.remote.save).not.toHaveBeenCalled();
+    const restarted = create(OTHER, f.remote, f.cache).store;
+    expect(await restarted.loadState()).toEqual(f.account);
+    expect(await restarted.readConflictRecovery()).toEqual({
+      ownerId: OTHER,
+      device: review.device,
+      account: review.account,
+      recoveryKeys: review.recoveryKeys,
+    });
+    expect(f.remote.save).not.toHaveBeenCalled();
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("refuses a newer cloud version after review without adopting stale data", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    const latest = preservedState();
+    latest.settings.name = "Changed after review";
+    await f.remote.save(JSON.stringify(latest), 2);
+    vi.mocked(f.remote.save).mockClear();
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+    expect(f.values.get(review.recoveryKeys.device)).toBeUndefined();
+    expect(f.payload()).toBe(JSON.stringify(latest));
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("refuses changed pending device edits after review", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    const changed = JSON.parse(f.originalCache);
+    const latest = preservedState();
+    latest.settings.name = "Newer pending device edits";
+    changed.payload = JSON.stringify(latest);
+    const raw = JSON.stringify(changed);
+    f.values.set(f.activeKey, raw);
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.values.get(f.activeKey)).toBe(raw);
+    expect(f.values.get(review.recoveryKeys.device)).toBeUndefined();
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("refuses device changes made while the final account read is pending", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    const originalLoad = vi.mocked(f.remote.load).getMockImplementation()!;
+    let reads = 0;
+    let latestRaw = "";
+    vi.mocked(f.remote.load).mockImplementation(async () => {
+      const loaded = await originalLoad();
+      if (++reads === 2) {
+        const envelope = JSON.parse(f.originalCache);
+        const latest = preservedState();
+        latest.settings.name = "Edited in another tab during final read";
+        envelope.payload = JSON.stringify(latest);
+        latestRaw = JSON.stringify(envelope);
+        f.values.set(f.activeKey, latestRaw);
+      }
+      return loaded;
+    });
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.values.get(f.activeKey)).toBe(latestRaw);
+    expect(f.values.get(review.recoveryKeys.device)).toBeDefined();
+    expect(f.payload()).toBe(JSON.stringify(f.account));
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("rejects other-owner reviews and changed review contents", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    await expect(
+      f.store.resolveConflictWithAccount({ ...review, ownerId: ADMIN }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      f.store.resolveConflictWithAccount({
+        ...review,
+        account: { ...review.account, payload: JSON.stringify(initialState()) },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      create(ADMIN, f.remote, f.cache).store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+    expect(f.values.get(review.recoveryKeys.device)).toBeUndefined();
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it.each(["device", "account", "index", "active"] as const)(
+    "does not adopt the account version when the %s preservation/write fails",
+    async (failure) => {
+      const f = await conflictFixture();
+      const review = await f.store.reviewConflict();
+      const originalSet = f.cache.setItem;
+      f.cache.setItem = async (key, value) => {
+        if (
+          key ===
+          (failure === "device"
+            ? review.recoveryKeys.device
+            : failure === "account"
+              ? review.recoveryKeys.account
+              : failure === "index"
+                ? `${f.activeKey}:conflict-backup:v1:latest`
+                : f.activeKey)
+        )
+          throw new Error("Device write failed");
+        await originalSet(key, value);
+      };
+      await expect(
+        f.store.resolveConflictWithAccount(review),
+      ).rejects.toMatchObject({ code: "CACHE_ERROR" });
+      expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+      expect(f.payload()).toBe(JSON.stringify(f.account));
+      expect(f.remote.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires recovery copy read-back before changing the active cache", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    const originalGet = f.cache.getItem;
+    f.cache.getItem = async (key) => {
+      const value = await originalGet(key);
+      return key === review.recoveryKeys.account && value !== null
+        ? "corrupted read-back"
+        : value;
+    };
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CACHE_ERROR" });
+    expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("requires the recovery index read-back before changing the active cache", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    const originalGet = f.cache.getItem;
+    f.cache.getItem = async (key) => {
+      const value = await originalGet(key);
+      return key === `${f.activeKey}:conflict-backup:v1:latest` &&
+        value !== null
+        ? "corrupted index read-back"
+        : value;
+    };
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CACHE_ERROR" });
+    expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+    expect(f.values.get(review.recoveryKeys.device)).toBeDefined();
+    expect(f.values.get(review.recoveryKeys.account)).toBeDefined();
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("refuses an occupied digest address without overwriting its original record", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    f.values.set(review.recoveryKeys.device, "occupied recovery address");
+    await expect(
+      f.store.resolveConflictWithAccount(review),
+    ).rejects.toMatchObject({ code: "CACHE_ERROR" });
+    expect(f.values.get(review.recoveryKeys.device)).toBe(
+      "occupied recovery address",
+    );
+    expect(f.values.get(f.activeKey)).toBe(f.originalCache);
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("does not create recovery for an older/missing server, matching lost response, clean cache or pending migration", async () => {
+    for (const variant of [
+      "older",
+      "missing",
+      "matching",
+      "clean",
+      "migration",
+    ] as const) {
+      const f = await conflictFixture();
+      if (variant === "older")
+        vi.mocked(f.remote.load).mockResolvedValue({
+          payload: JSON.stringify(f.account),
+          revision: 0,
+        });
+      if (variant === "missing")
+        vi.mocked(f.remote.load).mockResolvedValue({
+          payload: null,
+          revision: 0,
+        });
+      if (variant === "matching")
+        vi.mocked(f.remote.load).mockResolvedValue({
+          payload: JSON.stringify(f.device),
+          revision: 2,
+        });
+      if (variant === "clean") {
+        const envelope = JSON.parse(f.originalCache);
+        envelope.dirty = false;
+        f.values.set(f.activeKey, JSON.stringify(envelope));
+      }
+      if (variant === "migration")
+        vi.mocked(f.remote.migrationStatus).mockResolvedValue({
+          eligible: true,
+          completed: false,
+        });
+      const before = new Map(f.values);
+      await expect(f.store.reviewConflict()).rejects.toBeInstanceOf(
+        AccountStoreError,
+      );
+      expect(f.values).toEqual(before);
+      expect(f.remote.save).not.toHaveBeenCalled();
+      expect(f.remote.migrate).not.toHaveBeenCalled();
+    }
+  });
+
+  it("preserves migration-receipt mismatch gates during review", async () => {
+    const f = await conflictFixture();
+    const envelope = JSON.parse(f.originalCache);
+    envelope.migrationDigest = "a".repeat(64);
+    f.values.set(f.activeKey, JSON.stringify(envelope));
+    vi.mocked(f.remote.migrationStatus).mockResolvedValue({
+      eligible: true,
+      completed: true,
+      digest: "b".repeat(64),
+    });
+    const before = new Map(f.values);
+    await expect(f.store.reviewConflict()).rejects.toMatchObject({
+      code: "CORRUPT_DATA",
+    });
+    expect(f.values).toEqual(before);
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("verifies recovery owner and digests before returning retained backups", async () => {
+    const f = await conflictFixture();
+    const review = await f.store.reviewConflict();
+    await f.store.resolveConflictWithAccount(review);
+    const raw = f.values.get(review.recoveryKeys.device)!;
+    const damaged = JSON.parse(raw);
+    damaged.ownerId = ADMIN;
+    f.values.set(review.recoveryKeys.device, JSON.stringify(damaged));
+    await expect(
+      create(OTHER, f.remote, f.cache).store.readConflictRecovery(),
+    ).rejects.toMatchObject({ code: "CORRUPT_DATA" });
+    f.values.set(review.recoveryKeys.device, raw);
+    damaged.ownerId = OTHER;
+    damaged.payloadDigest = "a".repeat(64);
+    f.values.set(review.recoveryKeys.device, JSON.stringify(damaged));
+    await expect(f.store.readConflictRecovery()).rejects.toMatchObject({
+      code: "CORRUPT_DATA",
+    });
+    const before = new Map(f.values);
+    const otherOwner = create(ADMIN, f.remote, f.cache).store;
+    expect(await otherOwner.readConflictRecovery()).toBeNull();
+    expect(f.values).toEqual(before);
+    expect(f.remote.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps previous immutable backups when a later conflict is resolved", async () => {
+    const f = await conflictFixture();
+    const first = await f.store.reviewConflict();
+    await f.store.resolveConflictWithAccount(first);
+    const oldDevice = f.values.get(first.recoveryKeys.device);
+    const oldAccount = f.values.get(first.recoveryKeys.account);
+    const nextDevice = preservedState();
+    nextDevice.settings.name = "Second device change";
+    vi.mocked(f.remote.save).mockRejectedValueOnce(
+      new AccountStoreError("NETWORK_ERROR", "Offline"),
+    );
+    await f.store.saveState(nextDevice);
+    const nextAccount = preservedState();
+    nextAccount.settings.name = "Second saved account change";
+    await f.remote.save(JSON.stringify(nextAccount), 2);
+    vi.mocked(f.remote.save).mockClear();
+    const second = await f.store.reviewConflict();
+    expect(second.recoveryKeys).not.toEqual(first.recoveryKeys);
+    await f.store.resolveConflictWithAccount(second);
+    expect(f.values.get(first.recoveryKeys.device)).toBe(oldDevice);
+    expect(f.values.get(first.recoveryKeys.account)).toBe(oldAccount);
+    expect(
+      (await create(OTHER, f.remote, f.cache).store.readConflictRecovery())
+        ?.device.payload,
+    ).toBe(JSON.stringify(nextDevice));
+    expect(f.remote.save).not.toHaveBeenCalled();
   });
 });

@@ -119,6 +119,11 @@ export function createHeaderFeedback<T>({
       };
     },
     activate: () => reset(true),
+    /** Loaded/recovered records start a new history without a save notice. */
+    opened({ offline }: { offline: boolean }) {
+      reset(true);
+      update(offline ? "Saved on device · sync pending" : "");
+    },
     deactivate: () => reset(false),
     edit(before: T, after: T, undoable = true): boolean {
       if (!active || sameSnapshot(before, after)) return false;

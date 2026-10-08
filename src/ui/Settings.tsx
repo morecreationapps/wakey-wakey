@@ -28,6 +28,7 @@ import { pickTextFile, exportTextFile } from "../platform/files";
 import { initialState } from "../data/defaults";
 import { AppState, systemClock } from "../model";
 import { displayDate, displayTime, localAt } from "../engine/time";
+import type { AccountConflictRecovery } from "../auth/accountStore";
 export function SettingsScreen({
   state,
   change,
@@ -37,12 +38,16 @@ export function SettingsScreen({
   accountEmail,
   accountId,
   logout,
+  recovery,
+  exportRecovery,
 }: ScreenProps & {
   saveAccount: (state: AppState) => Promise<void>;
   resetAccount: () => Promise<void>;
   accountEmail: string;
   accountId: string;
   logout: () => Promise<void>;
+  recovery?: AccountConflictRecovery | null;
+  exportRecovery?: (source: "device" | "account") => void;
 }) {
   const [section, setSection] = useState("Work"),
     [status, setStatus] = useState<NotificationStatus | null>(null),
@@ -220,6 +225,40 @@ export function SettingsScreen({
       </Card>
       <Card>
         <Heading small>Privacy, backup & restore</Heading>
+        {!!recovery && !!exportRecovery && (
+          <Card>
+            <Heading small>Preserved versions from account recovery</Heading>
+            <Body>
+              Both versions were kept on this device before you opened the saved
+              account planner. Download them to review or keep them elsewhere.
+              Downloading does not replace your current planner.
+            </Body>
+            <Body>
+              Device version: {recovery.device.summary.rotaEntries} rota
+              entries, {recovery.device.summary.tasks} tasks,{" "}
+              {recovery.device.summary.sleepLogs} sleep logs.
+            </Body>
+            <Body>
+              Account version: {recovery.account.summary.rotaEntries} rota
+              entries, {recovery.account.summary.tasks} tasks,{" "}
+              {recovery.account.summary.sleepLogs} sleep logs.
+            </Body>
+            <Row>
+              <Button
+                title="Download preserved device version"
+                secondary
+                icon="download"
+                onPress={() => exportRecovery("device")}
+              />
+              <Button
+                title="Download preserved account version"
+                secondary
+                icon="download"
+                onPress={() => exportRecovery("account")}
+              />
+            </Row>
+          </Card>
+        )}
         <Body>
           Your rota, settings, tasks and diary belong to your verified account
           and synchronise with its protected backend. This device keeps an
@@ -263,8 +302,8 @@ export function SettingsScreen({
           <Notice>
             Valid backup preview: {restore.entries.length} rota entries,{" "}
             {restore.tasks.length} tasks, {restore.sleepLogs.length} sleep
-            check-ins. Confirming replaces this account’s planner and synchronised data.
-            Reminders are disabled until you opt in again.
+            check-ins. Confirming replaces this account’s planner and
+            synchronised data. Reminders are disabled until you opt in again.
           </Notice>
         )}
         {restore && (

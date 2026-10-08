@@ -16,6 +16,8 @@ import { initialState } from "./src/data/defaults";
 import {
   createAccountStore,
   handleAccountAccessDenied,
+  type AccountConflictReview,
+  type AccountConflictRecovery,
   type AccountStore,
 } from "./src/auth/accountStore";
 import { authProvider, accountRemote, hashSnapshot } from "./src/auth/service";
@@ -27,6 +29,8 @@ import {
   clearNotificationOwner,
 } from "./src/platform/notificationScope";
 import { AuthScreens } from "./src/ui/AuthScreens";
+import { AccountConflict } from "./src/ui/AccountConflict";
+import { exportTextFile } from "./src/platform/files";
 import { syncReminders, disableReminders } from "./src/platform/notifications";
 import {
   Theme,
@@ -144,6 +148,12 @@ function Planner({
 }) {
   const active = useRef(true);
   const [focusedControl, setFocusedControl] = useState("");
+  const [conflict, setConflict] = useState<AccountConflictReview | null>(null);
+  const [recovery, setRecovery] = useState<AccountConflictRecovery | null>(
+    null,
+  );
+  const [loadingAccount, setLoadingAccount] = useState(false);
+  const loadingAccountRef = useRef(false);
   const [state, setState] = useState<AppState | null>(null),
     [tab, setTab] = useState("Today"),
     [message, setMessage] = useState(""),
@@ -200,21 +210,111 @@ function Planner({
       throw error;
     }
   };
-  const load = () =>
-    store
-      .loadState()
-      .then((a) => {
-        if (!active.current) return;
-        stateRef.current = a;
-        setState(a);
-        setLoadError("");
+  const openLoadedState = (a: AppState) => {
+    if (!active.current) return;
+    stateRef.current = a;
+    durableState.current = a;
+    ++saveRevision.current;
+    // Undo history belongs to the copy that was edited, not a newly opened or
+    // recovered account snapshot.
+    // A read is already durable. Opening a planner must not create a new cloud
+    // revision or turn another browser's pending edits into a conflict.
+    feedback.opened({ offline: store.status().offline });
+    setState(a);
+    setLoadError("");
+    setConflict(null);
+    void store
+      .readConflictRecovery()
+      .then((saved) => {
+        if (active.current) setRecovery(saved);
       })
       .catch((e) => {
-        if (!active.current || accessDenied(e)) return;
-        setLoadError(
-          `Account data could not be read: ${e.message}. Existing data has been retained.`,
-        );
+        if (active.current && !accessDenied(e))
+          notify(`Preserved backup access needs attention: ${e.message}`);
       });
+    syncReminders(a, systemClock, identity.id).catch((e) =>
+      notify(`Reminder scheduling needs attention: ${e.message}`),
+    );
+  };
+  const reviewConflict = async () => {
+    const review = await store.reviewConflict();
+    if (!active.current) return;
+    setConflict(review);
+    setLoadError("");
+  };
+  const load = async () => {
+    if (loadingAccountRef.current) return;
+    loadingAccountRef.current = true;
+    setLoadingAccount(true);
+    setLoadError("");
+    try {
+      openLoadedState(await store.loadState());
+    } catch (e) {
+      if (!active.current || accessDenied(e)) return;
+      if ((e as { code?: string }).code === "CONFLICT") {
+        try {
+          await reviewConflict();
+          return;
+        } catch (reviewError) {
+          if (!active.current || accessDenied(reviewError)) return;
+          e = reviewError;
+        }
+      }
+      setLoadError(
+        `Account data could not be read: ${(e as Error).message} Existing data has been retained.`,
+      );
+    } finally {
+      loadingAccountRef.current = false;
+      if (active.current) setLoadingAccount(false);
+    }
+  };
+  const openAccountVersion = async () => {
+    if (!conflict || loadingAccountRef.current) return;
+    loadingAccountRef.current = true;
+    setLoadingAccount(true);
+    setLoadError("");
+    try {
+      openLoadedState(await store.resolveConflictWithAccount(conflict));
+    } catch (e) {
+      if (!active.current || accessDenied(e)) return;
+      setLoadError((e as Error).message);
+    } finally {
+      loadingAccountRef.current = false;
+      if (active.current) setLoadingAccount(false);
+    }
+  };
+  const downloadConflict = async (source: "device" | "account") => {
+    if (!conflict) return;
+    try {
+      await exportTextFile(
+        `wakey-wakey-${source}-revision-${conflict[source].summary.revision}.json`,
+        conflict[source].payload,
+        "application/json",
+      );
+      notify(
+        `${source === "device" ? "Device" : "Account"} backup download requested.`,
+      );
+    } catch (e) {
+      if (active.current)
+        setLoadError(`Backup export failed: ${(e as Error).message}`);
+    }
+  };
+  const downloadRecovery = async (source: "device" | "account") => {
+    try {
+      // Re-read and validate the immutable recovery copy when exporting it.
+      const saved = await store.readConflictRecovery();
+      if (!saved || !active.current) return;
+      await exportTextFile(
+        `wakey-wakey-preserved-${source}-revision-${saved[source].summary.revision}.json`,
+        saved[source].payload,
+        "application/json",
+      );
+      notify(`Preserved ${source} backup download requested.`);
+    } catch (e) {
+      if (active.current && !accessDenied(e))
+        notify(`Preserved backup export failed: ${(e as Error).message}`);
+    }
+  };
   useEffect(() => {
     active.current = true;
     feedback.activate();
@@ -229,7 +329,7 @@ function Planner({
     scroll.current?.scrollTo({ y: 0, animated: false });
   }, [state?.settings.onboardingComplete]);
   useEffect(() => {
-    if (!state || !active.current) return;
+    if (!state || !active.current || state === durableState.current) return;
     const revision = ++saveRevision.current;
     const ticket = feedback.beginSave();
     store
@@ -254,6 +354,12 @@ function Planner({
           feedback.failed(ticket)
         ) {
           notify(`Your latest changes could not be saved: ${e.message}`);
+          if (e.code === "CONFLICT") {
+            stateRef.current = null;
+            durableState.current = null;
+            setState(null);
+            void load();
+          }
         }
       });
   }, [state]);
@@ -303,7 +409,18 @@ function Planner({
       <StatusBar style="dark" />
       <View style={{ flex: 1, backgroundColor: c.bg }}>
         <ErrorBoundary>
-          {!state ? (
+          {!state && conflict ? (
+            <AccountConflict
+              review={conflict}
+              busy={loadingAccount}
+              error={loadError}
+              message={message}
+              onRefresh={() => void load()}
+              onDownload={(source) => void downloadConflict(source)}
+              onOpenAccount={() => void openAccountVersion()}
+              onLogout={() => void leaveAccount()}
+            />
+          ) : !state ? (
             <View style={{ padding: 40, gap: 18, backgroundColor: c.card }}>
               <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
                 Wakey-Wakey!
@@ -313,7 +430,11 @@ function Planner({
               </WhiteSurface.Provider>
               {!!loadError && (
                 <>
-                  <Button title="Retry reading saved data" onPress={load} />
+                  <Button
+                    title="Retry reading saved data"
+                    disabled={loadingAccount}
+                    onPress={() => void load()}
+                  />
                   <Button
                     title="Log out"
                     secondary
@@ -476,6 +597,10 @@ function Planner({
                         accountEmail={identity.email}
                         accountId={identity.id}
                         logout={leaveAccount}
+                        recovery={recovery}
+                        exportRecovery={(source) =>
+                          void downloadRecovery(source)
+                        }
                       />
                     )}
                   </View>
