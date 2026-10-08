@@ -17,9 +17,9 @@ export interface Settings {
   safetyCritical: boolean;
   timezone: string;
   timezoneConfirmed: boolean;
-  dateFormat: "UK" | "ISO";
+  dateFormat: "UK" | "ISO" | "LONG";
   clockFormat: "24" | "12";
-  firstDay: "Monday" | "Sunday";
+  firstDay: "Monday" | "Sunday" | "Saturday";
   travelMode: string;
   outboundMin: number | null;
   outboundMax: number | null;

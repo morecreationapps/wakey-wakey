@@ -138,9 +138,13 @@ export function validateBackup(value: unknown): AppState {
     bool(settings.onboardingRotaPending, "settings.onboardingRotaPending");
   if (settings.caffeineBeforeBed !== undefined)
     number(settings.caffeineBeforeBed, "settings.caffeineBeforeBed", 2880);
-  choice(settings.dateFormat, ["UK", "ISO"], "settings.dateFormat");
+  choice(settings.dateFormat, ["UK", "ISO", "LONG"], "settings.dateFormat");
   choice(settings.clockFormat, ["24", "12"], "settings.clockFormat");
-  choice(settings.firstDay, ["Monday", "Sunday"], "settings.firstDay");
+  choice(
+    settings.firstDay,
+    ["Monday", "Sunday", "Saturday"],
+    "settings.firstDay",
+  );
   choice(settings.theme, ["light", "dark", "system"], "settings.theme");
   for (const key of [
     "outboundMin",

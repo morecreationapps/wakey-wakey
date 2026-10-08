@@ -147,10 +147,12 @@ export function SettingsFields({
         />
         <Body muted>Date format</Body>
         <Choices
-          values={["UK", "ISO"]}
+          values={["UK", "ISO", "LONG"]}
           value={s.dateFormat}
           onChange={(v) => put("dateFormat", v)}
+          labels={{ LONG: "Sat 10th October 2026" }}
         />
+        <Body muted>Long dates include the weekday, day and full month.</Body>
         <Body muted>Clock</Body>
         <Choices
           values={["24", "12"]}
@@ -159,7 +161,7 @@ export function SettingsFields({
         />
         <Body muted>First day of week</Body>
         <Choices
-          values={["Monday", "Sunday"]}
+          values={["Monday", "Sunday", "Saturday"]}
           value={s.firstDay}
           onChange={(v) => put("firstDay", v)}
         />

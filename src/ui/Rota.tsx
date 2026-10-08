@@ -26,7 +26,14 @@ import {
   Icon,
   ui,
 } from "./components";
-import { dateInZone, addDays, displayDate, zonedEpoch } from "../engine/time";
+import {
+  dateInZone,
+  addDays,
+  displayDate,
+  displayLocalDateTime,
+  zonedEpoch,
+} from "../engine/time";
+import { startOfWeek, weekdayLabels, weekdayOffset } from "../engine/calendar";
 import {
   validateEntry,
   entryWarnings,
@@ -109,15 +116,14 @@ export function Rota({ state, change, notify }: ScreenProps) {
     [patternStart, setPatternStart] = useState(today),
     [scope, setScope] = useState<"one" | "future" | "all">("future"),
     [copyTarget, setCopyTarget] = useState(addDays(today, 7));
-  const day = Temporal.PlainDate.from(anchor),
-    weekOffset = (day.dayOfWeek - (s.firstDay === "Monday" ? 1 : 7) + 7) % 7;
+  const day = Temporal.PlainDate.from(anchor);
   const first =
     view === "Year"
       ? day.with({ month: 1, day: 1 })
       : view === "Month"
         ? day.with({ day: 1 })
         : view === "Week"
-          ? day.subtract({ days: weekOffset })
+          ? startOfWeek(day, s.firstDay)
           : day;
   const count =
     view === "Year"
@@ -303,10 +309,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
         </Row>
         {view === "Month" && (
           <Row>
-            {(s.firstDay === "Monday"
-              ? ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-              : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-            ).map((x) => (
+            {weekdayLabels(s.firstDay).map((x) => (
               <Text
                 key={x}
                 style={{
@@ -325,8 +328,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
           {view === "Month" &&
             Array.from(
               {
-                length:
-                  (first.dayOfWeek - (s.firstDay === "Monday" ? 1 : 7) + 7) % 7,
+                length: weekdayOffset(first, s.firstDay),
               },
               (_, i) => <View key={"empty" + i} style={{ width: "13.3%" }} />,
             )}
@@ -474,8 +476,8 @@ export function Rota({ state, change, notify }: ScreenProps) {
               />
             </Row>
             <Body>
-              {e.start?.replace("T", " ")}{" "}
-              {e.end ? " → " + e.end.replace("T", " ") : ""}
+              {e.start ? displayLocalDateTime(e.start, s.dateFormat) : ""}{" "}
+              {e.end ? " → " + displayLocalDateTime(e.end, s.dateFormat) : ""}
             </Body>
             {e.status === "Holiday" && (
               <Notice>
@@ -498,7 +500,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
                   ? ` · Overtime extension: ${e.overtimeMinutes} min`
                   : ""}
                 {e.actualEnd
-                  ? ` · Actual finish: ${e.actualEnd.replace("T", " ")}`
+                  ? ` · Actual finish: ${displayLocalDateTime(e.actualEnd, s.dateFormat)}`
                   : ""}
               </Body>
             )}

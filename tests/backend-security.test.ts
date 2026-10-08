@@ -13,6 +13,14 @@ const ADMIN = "10000000-0000-4000-8000-000000000003";
 const session = (id: string) => id.replace(/^1/, "2");
 const ADMIN_EMAIL = "approved-admin@example.invalid";
 let db: PGlite;
+type ValidatorDefinition = {
+  source: string;
+  metadata: Record<string, unknown>;
+};
+let previousValidator: ValidatorDefinition;
+let expandedValidator: ValidatorDefinition;
+let preferenceMigration: string;
+let previousExpandedChoiceError: string | undefined;
 const snapshot = (name: string) => {
   const state = initialState();
   state.settings.name = name;
@@ -104,6 +112,16 @@ const digest = (text: string) =>
 async function owner() {
   await db.exec("reset role");
 }
+async function validatorDefinition() {
+  return (
+    await db.query<ValidatorDefinition>(`
+      select p.prosrc as source,
+        to_jsonb(p) - 'prosrc' - 'prosqlbody' as metadata
+      from pg_catalog.pg_proc p
+      where p.oid = 'private.validate_snapshot(text)'::regprocedure
+    `)
+  ).rows[0];
+}
 async function user(
   id: string,
   methods = ["password"],
@@ -170,12 +188,27 @@ describe("executed PostgreSQL account security", () => {
     const files = (await readdir(directory))
       .filter((file) => file.endsWith(".sql"))
       .sort();
-    const sql = (
-      await Promise.all(
-        files.map((file) => readFile(new URL(file, directory), "utf8")),
-      )
-    ).join("\n");
-    await db.exec(sql);
+    for (const file of files) {
+      const sql = await readFile(new URL(file, directory), "utf8");
+      await db.exec(sql);
+      if (file === "20261007190548_account_security.sql") {
+        previousValidator = await validatorDefinition();
+        const expanded = JSON.parse(payload);
+        expanded.settings.dateFormat = "LONG";
+        expanded.settings.firstDay = "Saturday";
+        try {
+          await db.query("select private.validate_snapshot($1)", [
+            JSON.stringify(expanded),
+          ]);
+        } catch (error) {
+          previousExpandedChoiceError = (error as { code?: string }).code;
+        }
+      }
+      if (file === "20261008110643_date_week_preferences.sql") {
+        preferenceMigration = sql;
+        expandedValidator = await validatorDefinition();
+      }
+    }
     for (const [id, email] of [
       [A, "alice@example.invalid"],
       [B, "bob@example.invalid"],
@@ -211,6 +244,88 @@ describe("executed PostgreSQL account security", () => {
       revision: 1,
     });
     expect(await rpc("planner_load")).toEqual({ payload, revision: 1 });
+  });
+  it("extends only the two preference lists and preserves validator ownership, ACL and attributes", () => {
+    expect(previousExpandedChoiceError).toBe("22023");
+    expect(expandedValidator.metadata).toEqual(previousValidator.metadata);
+    expect(expandedValidator.source).toBe(
+      previousValidator.source
+        .replace(
+          "perform private.check_choice(settings->'dateFormat','settings.dateFormat',array['UK','ISO']);",
+          "perform private.check_choice(settings->'dateFormat','settings.dateFormat',array['UK','ISO','LONG']);",
+        )
+        .replace(
+          "perform private.check_choice(settings->'firstDay','settings.firstDay',array['Monday','Sunday']);",
+          "perform private.check_choice(settings->'firstDay','settings.firstDay',array['Monday','Sunday','Saturday']);",
+        ),
+    );
+  });
+  it.each(
+    ["UK", "ISO", "LONG"].flatMap((format) =>
+      ["Monday", "Sunday", "Saturday"].map((firstDay) => [format, firstDay]),
+    ),
+  )(
+    "saves and restores %s dates with a %s week start",
+    async (format, firstDay) => {
+      const state = JSON.parse(payload);
+      state.settings.dateFormat = format;
+      state.settings.firstDay = firstDay;
+      const exact = JSON.stringify(state);
+      expect(await rpc("planner_save", [exact, 0])).toEqual({
+        payload: exact,
+        revision: 1,
+      });
+      expect(await rpc("planner_load")).toEqual({
+        payload: exact,
+        revision: 1,
+      });
+    },
+  );
+  it.each([
+    ["dateFormat", "US"],
+    ["dateFormat", "long"],
+    ["dateFormat", ""],
+    ["firstDay", "Tuesday"],
+    ["firstDay", "saturday"],
+    ["firstDay", 7],
+  ])(
+    "rejects unsupported %s=%s without creating account data",
+    async (field, value) => {
+      const state = JSON.parse(payload);
+      state.settings[field] = value;
+      await expect(
+        rpc("planner_save", [JSON.stringify(state), 0]),
+      ).rejects.toThrow(/invalid choice/);
+      expect(await rpc("planner_load")).toEqual({ payload: null, revision: 0 });
+    },
+  );
+  it("reapplying the preference migration leaves the complete validator unchanged", async () => {
+    await owner();
+    await db.exec(preferenceMigration);
+    expect(await validatorDefinition()).toEqual(expandedValidator);
+  });
+  it("refuses to replace an unexpectedly changed validator", async () => {
+    await owner();
+    await db.exec("begin");
+    try {
+      const definition = (
+        await db.query<{ definition: string }>(
+          "select pg_get_functiondef('private.validate_snapshot(text)'::regprocedure) as definition",
+        )
+      ).rows[0].definition;
+      await db.exec(
+        definition.replace(
+          "\nbegin\n",
+          "\nbegin\n  -- Unexpected operator edit.\n",
+        ),
+      );
+      await expect(db.exec(preferenceMigration)).rejects.toThrow(
+        /Unexpected snapshot validator source/,
+      );
+    } finally {
+      await db.exec("rollback");
+    }
+    expect(await validatorDefinition()).toEqual(expandedValidator);
   });
   it("isolates two accounts in RPCs and direct owner RLS reads", async () => {
     await rpc("planner_save", [snapshot("Alice"), 0]);

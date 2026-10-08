@@ -6,6 +6,7 @@ import {
   addDays,
   dateInZone,
   displayDate,
+  displayLocalDateTime,
   displayTime,
   localAt,
   zonedEpoch,
@@ -324,7 +325,8 @@ export function Plan({ state, change, notify }: ScreenProps) {
                 />
               </Row>
               <Body>
-                {t.minutes} min · Deadline {t.deadline.replace("T", " ")}
+                {t.minutes} min · Deadline{" "}
+                {displayLocalDateTime(t.deadline, s.dateFormat)}
                 {t.recurrence === "none" ? "" : ` · ${t.recurrence}`}
               </Body>
               {occurrences.slice(0, 8).map((o, i) => (

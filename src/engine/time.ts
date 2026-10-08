@@ -1,5 +1,5 @@
 import { Temporal } from "@js-temporal/polyfill";
-import { Clock, ISODate } from "../model";
+import { Clock, ISODate, Settings } from "../model";
 
 /** Local duty times always use their recorded IANA zone, never the device zone. */
 export function zonedEpoch(
@@ -66,12 +66,44 @@ export function displayTime(
 
 export function displayDate(
   date: ISODate,
-  format: "UK" | "ISO" = "UK",
+  format: Settings["dateFormat"] = "UK",
 ): string {
   const d = Temporal.PlainDate.from(date, { overflow: "reject" });
-  return format === "ISO"
-    ? d.toString()
-    : `${String(d.day).padStart(2, "0")}/${String(d.month).padStart(2, "0")}/${d.year}`;
+  if (format === "ISO") return d.toString();
+  if (format === "LONG") {
+    const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const months = [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ];
+    const lastTwo = d.day % 100;
+    const suffix =
+      lastTwo >= 11 && lastTwo <= 13
+        ? "th"
+        : (["th", "st", "nd", "rd"][d.day % 10] ?? "th");
+    return `${weekdays[d.dayOfWeek - 1]} ${d.day}${suffix} ${months[d.month - 1]} ${d.year}`;
+  }
+  return `${String(d.day).padStart(2, "0")}/${String(d.month).padStart(2, "0")}/${d.year}`;
+}
+
+/** Format recorded wall-clock timestamps without applying a device timezone. */
+export function displayLocalDateTime(
+  local: string,
+  format: Settings["dateFormat"] = "UK",
+): string {
+  return format === "LONG"
+    ? `${displayDate(local.slice(0, 10), format)} ${local.slice(11)}`
+    : local.replace("T", " ");
 }
 
 export function onDate(

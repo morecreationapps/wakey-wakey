@@ -12,6 +12,7 @@ import {
   dateInZone,
   addDays,
   displayDate,
+  displayLocalDateTime,
   displayTime,
   localAt,
   zonedEpoch,
@@ -286,8 +287,14 @@ export function TransitionCard({
       {transition.dailySteps?.map((x) => (
         <View key={x.date}>
           <Body>
-            {displayDate(x.date, s.dateFormat)} · Bed {x.bedtime} · Wake{" "}
-            {x.wake}
+            {displayDate(x.date, s.dateFormat)} · Bed{" "}
+            {s.dateFormat === "LONG"
+              ? displayLocalDateTime(x.bedtime, s.dateFormat)
+              : x.bedtime}{" "}
+            · Wake{" "}
+            {s.dateFormat === "LONG"
+              ? displayLocalDateTime(x.wake, s.dateFormat)
+              : x.wake}
           </Body>
           <Body muted style={{ fontSize: 12 }}>
             {x.why}
@@ -341,13 +348,19 @@ export function Today({
     <View style={ui.stack}>
       <Row style={{ justifyContent: "space-between" }}>
         <View style={{ gap: 8 }}>
-          <Label>
-            {new Intl.DateTimeFormat("en-GB", {
-              weekday: "long",
-              day: "numeric",
-              month: "long",
-              timeZone: s.timezone,
-            }).format(new Date(systemClock.now()))}
+          <Label
+            style={
+              s.dateFormat === "LONG" ? { textTransform: "none" } : undefined
+            }
+          >
+            {s.dateFormat === "LONG"
+              ? displayDate(today, s.dateFormat)
+              : new Intl.DateTimeFormat("en-GB", {
+                  weekday: "long",
+                  day: "numeric",
+                  month: "long",
+                  timeZone: s.timezone,
+                }).format(new Date(systemClock.now()))}
           </Label>
           <Heading>
             {s.name ? `Hello, ${s.name}.` : "Make tomorrow easier."}

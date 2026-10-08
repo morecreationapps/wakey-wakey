@@ -137,6 +137,24 @@ function fakeReminders(existing: ScheduledReminder[] = []) {
 }
 
 describe("rolling local reminder intentions and reconciliation", () => {
+  it("uses long display dates without changing reminder IDs or scheduled times", () => {
+    const original = state();
+    const before = desiredReminders(original, clock);
+    const after = desiredReminders(
+      { ...original, settings: { ...original.settings, dateFormat: "LONG" } },
+      clock,
+    );
+    expect(after.map(({ id, at }) => ({ id, at }))).toEqual(
+      before.map(({ id, at }) => ({ id, at })),
+    );
+    expect(
+      after.find((reminder) => reminder.entryId === "first")?.body,
+    ).toContain("Tue 10th August 2032");
+    expect(
+      before.find((reminder) => reminder.entryId === "first")?.body,
+    ).toContain("2032-08-10");
+  });
+
   it("G: confirmed leave removes that duty reminders and makes the following actual workday next", async () => {
     const original = state();
     const fake = fakeReminders();

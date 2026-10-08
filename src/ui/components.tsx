@@ -435,10 +435,12 @@ export function Choices<T extends string>({
   values,
   value,
   onChange,
+  labels,
 }: {
   values: T[];
   value: T;
   onChange: (v: T) => void;
+  labels?: Partial<Record<T, string>>;
 }) {
   const c = useTheme();
   const [focused, setFocused] = useState<T | null>(null);
@@ -448,7 +450,7 @@ export function Choices<T extends string>({
         <Pressable
           key={v}
           accessibilityRole="button"
-          accessibilityLabel={v}
+          accessibilityLabel={labels?.[v] ?? v}
           accessibilityState={{ selected: v === value }}
           aria-pressed={v === value}
           onPress={() => onChange(v)}
@@ -475,7 +477,7 @@ export function Choices<T extends string>({
               textDecorationLine: v === value ? "underline" : "none",
             }}
           >
-            {v}
+            {labels?.[v] ?? v}
           </Text>
         </Pressable>
       ))}

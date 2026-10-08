@@ -1,6 +1,6 @@
 import { AppState, Clock, ReminderRecord } from "../model";
 import { planShift, transitions } from "../engine/planner";
-import { addDays, localAt, zonedEpoch } from "../engine/time";
+import { addDays, displayDate, localAt, zonedEpoch } from "../engine/time";
 
 export const REMINDER_PREFIX = "wakey:";
 export const REMINDER_HORIZON_DAYS = 14;
@@ -72,7 +72,7 @@ export function desiredReminders(
         id: `${REMINDER_PREFIX}duty:${encodeURIComponent(entry.id)}:${event.kind}`,
         at: event.at,
         title: event.kind === "wake" ? "Wake-up reminder" : event.label,
-        body: `${entry.category} duty on ${entry.date}. ${event.why}${wakeAdvice}`,
+        body: `${entry.category} duty on ${settings.dateFormat === "LONG" ? displayDate(entry.date, "LONG") : entry.date}. ${event.why}${wakeAdvice}`,
         kind: event.kind,
         entryId: entry.id,
       });
@@ -148,7 +148,7 @@ export function desiredReminders(
           id: `${REMINDER_PREFIX}transition:${encodeURIComponent(change.id)}`,
           at: zonedEpoch(`${reviewDate}T12:00`, settings.timezone),
           title: "Review your upcoming shift change",
-          body: `${change.to} duties start on ${change.nextDate}. ${change.provisional ? "Some information is still needed; review the provisional plan." : "Review preparation tasks and the transition plan."}`,
+          body: `${change.to} duties start on ${settings.dateFormat === "LONG" ? displayDate(change.nextDate, "LONG") : change.nextDate}. ${change.provisional ? "Some information is still needed; review the provisional plan." : "Review preparation tasks and the transition plan."}`,
           kind: "transition",
         });
       } catch {

@@ -3,6 +3,7 @@ import {
   Clock,
   DayStatus,
   RotaEntry,
+  Settings,
   ShiftCategory,
   systemClock,
   uid,
@@ -83,7 +84,10 @@ function csvRows(text: string): { fields: string[]; line: number }[] {
   push();
   return rows;
 }
-function parseDate(value: string, format: "UK" | "ISO" | undefined): string {
+function parseDate(
+  value: string,
+  format: Settings["dateFormat"] | undefined,
+): string {
   if (validDate(value)) return value;
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)) {
     if (format !== "UK")
@@ -161,7 +165,7 @@ function baseEntry(
 function csvEntry(
   values: Record<string, string>,
   timezone: string,
-  dateFormat?: "UK" | "ISO",
+  dateFormat?: Settings["dateFormat"],
 ): { entry: RotaEntry; warnings: string[] } {
   const date = parseDate(values.date ?? "", dateFormat);
   const state = parseStatus(values.status ?? "");
@@ -305,7 +309,7 @@ export function previewImport(
   text: string,
   timezone: string,
   existing: RotaEntry[] = [],
-  dateFormat?: "UK" | "ISO",
+  dateFormat?: Settings["dateFormat"],
 ): ImportPreview {
   const preview: ImportPreview = { rows: [], errors: [] };
   if (!validTimezone(timezone))
