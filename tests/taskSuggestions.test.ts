@@ -618,6 +618,56 @@ describe("task-aware day-before suggestions", () => {
       )?.conflict,
     ).toContain("start has passed");
   });
+  it.each([
+    { kind: "fixed" as const, locked: false, movable: true },
+    { kind: "essential" as const, locked: true, movable: true },
+    { kind: "flexible" as const, locked: false, movable: false },
+    {
+      kind: "essential" as const,
+      locked: false,
+      movable: true,
+      preparationAutoStart: false,
+    },
+  ])(
+    "retains the chosen 16:30 appointment when departure inputs are missing (%j)",
+    (patch) => {
+      const entry = shift("Late"),
+        s = settings({ outboundMax: null }),
+        entries = [rest("2026-10-09"), entry];
+      const booking = base("booking", "Booked haircut", {
+        ...patch,
+        earliest: "2026-10-09T16:30",
+        scheduledStart: "2026-10-09T16:30",
+        minutes: 30,
+        linkedShiftId: entry.id,
+      });
+      const saved = JSON.stringify(booking),
+        p = planPreparation(entries, [booking], s, clock()),
+        row = p.rows.find((r) => r.taskId === "booking")!,
+        placement = p.placements.find((p) => p.taskId === "booking")!;
+      expect(localAt(row.at!, zone)).toBe("2026-10-09T16:30");
+      expect(localAt(row.end!, zone)).toBe("2026-10-09T17:00");
+      expect(row.status).toBe("conflict");
+      expect(row.conflict).toContain(
+        "Departure inputs for the linked duty are missing",
+      );
+      expect(placement.conflict).toBe(row.conflict);
+      expect(JSON.stringify(booking)).toBe(saved);
+      expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [booking]));
+      const automatic = {
+        ...booking,
+        kind: "essential" as const,
+        locked: false,
+        movable: true,
+        preparationAutoStart: true,
+      };
+      expect(
+        planPreparation(entries, [automatic], s, clock()).rows.find(
+          (r) => r.taskId === "booking",
+        )?.at,
+      ).toBeNull();
+    },
+  );
   it("makes invalid prior Work and mixed-timezone uncertainty visible on tasks, generated stages and suggestions", () => {
     const entry = shift(),
       s = settings(),

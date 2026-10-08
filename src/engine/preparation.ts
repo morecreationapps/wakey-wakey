@@ -939,6 +939,58 @@ export function planPreparation(
         p.taskId === task.id &&
         (!occurrenceDate || p.occurrenceDate === occurrenceDate),
     );
+    // A missing departure input can prevent the general planner from reaching
+    // its fixed-time branch. Keep a valid existing appointment time visible,
+    // while retaining that missing-input reason as a review warning.
+    if (
+      p?.start === null &&
+      /missing|still needed|Confirm/.test(p.reason) &&
+      !inactive(state) &&
+      (fixedTask(task) ||
+        (task.preparationAutoStart === false &&
+          !!task.scheduledStart &&
+          task.linkedShiftId === next.id)) &&
+      chosenFor(task, occurrenceDate) !== null &&
+      Number.isFinite(task.minutes) &&
+      task.minutes > 0 &&
+      Number.isFinite(task.travelMinutes) &&
+      task.travelMinutes >= 0
+    ) {
+      const review = planTasks(
+        normalCandidates.map((candidate) =>
+          candidate.id === task.id
+            ? {
+                ...candidate,
+                linkedShiftId: undefined,
+                locked: true,
+                movable: false,
+              }
+            : candidate,
+        ),
+        entries,
+        settings,
+        schedulerClock,
+        horizon,
+      ).find(
+        (placement) =>
+          placement.taskId === task.id &&
+          (!occurrenceDate || placement.occurrenceDate === occurrenceDate),
+      );
+      if (
+        review?.start !== null &&
+        review?.start !== undefined &&
+        review.end !== null
+      )
+        p = {
+          ...review,
+          reason:
+            "The existing chosen start is retained; missing planning inputs still need review before relying on this activity.",
+          conflict: unique([
+            p.reason,
+            ...(review.conflict ? [review.conflict] : []),
+          ]).join(" "),
+        };
+    }
     if (
       p?.start !== null &&
       p?.start !== undefined &&
