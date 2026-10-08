@@ -26,13 +26,7 @@ import {
   Icon,
   ui,
 } from "./components";
-import {
-  dateInZone,
-  addDays,
-  displayDate,
-  displayLocalDateTime,
-  zonedEpoch,
-} from "../engine/time";
+import { dateInZone, addDays, displayDate, zonedEpoch } from "../engine/time";
 import { startOfWeek, weekdayLabels, weekdayOffset } from "../engine/calendar";
 import {
   validateEntry,
@@ -50,6 +44,21 @@ import {
   exportICS,
 } from "../data/import";
 import { pickTextFile, exportTextFile } from "../platform/files";
+import {
+  DatePickerField,
+  DateTimePickerField,
+  TimePickerField,
+} from "./DateTimePickers";
+import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
+import { moveRotaEntryDate, normaliseRotaEntry } from "./rotaEditor";
+
+function pickerText(value: string, format: (value: string) => string): string {
+  try {
+    return format(value);
+  } catch {
+    return value;
+  }
+}
 export const statusLabel = (s: DayStatus) =>
   ({
     Work: "Work",
@@ -160,16 +169,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
         zonedEpoch(edit.start, edit.timezone, edit.disambiguation);
         zonedEpoch(edit.end, edit.timezone, edit.disambiguation);
       }
-      const entry =
-        edit.status === "Work"
-          ? edit
-          : {
-              ...edit,
-              start: null,
-              end: null,
-              actualEnd: null,
-              overtimeMinutes: 0,
-            };
+      const entry = normaliseRotaEntry(edit);
       const errors = validateEntry(entry, state.entries, entry.id);
       if (errors.length) {
         setReview(errors);
@@ -476,8 +476,17 @@ export function Rota({ state, change, notify }: ScreenProps) {
               />
             </Row>
             <Body>
-              {e.start ? displayLocalDateTime(e.start, s.dateFormat) : ""}{" "}
-              {e.end ? " → " + displayLocalDateTime(e.end, s.dateFormat) : ""}
+              {e.start
+                ? pickerText(e.start, (value) =>
+                    formatPickerDateTime(value, s.dateFormat, s.clockFormat),
+                  )
+                : ""}{" "}
+              {e.end
+                ? " → " +
+                  pickerText(e.end, (value) =>
+                    formatPickerDateTime(value, s.dateFormat, s.clockFormat),
+                  )
+                : ""}
             </Body>
             {e.status === "Holiday" && (
               <Notice>
@@ -500,7 +509,7 @@ export function Rota({ state, change, notify }: ScreenProps) {
                   ? ` · Overtime extension: ${e.overtimeMinutes} min`
                   : ""}
                 {e.actualEnd
-                  ? ` · Actual finish: ${displayLocalDateTime(e.actualEnd, s.dateFormat)}`
+                  ? ` · Actual finish: ${pickerText(e.actualEnd, (value) => formatPickerDateTime(value, s.dateFormat, s.clockFormat))}`
                   : ""}
               </Body>
             )}
@@ -516,16 +525,17 @@ export function Rota({ state, change, notify }: ScreenProps) {
               ? "Edit entry"
               : "New rota entry"}
           </Heading>
-          <Field
-            label="Date (YYYY-MM-DD)"
+          <DatePickerField
+            label="Date"
             value={edit.date}
-            onChange={(v) =>
-              put({
-                date: v,
-                start: edit.start ? v + "T" + edit.start.split("T")[1] : null,
-                end: edit.end ? v + "T" + edit.end.split("T")[1] : null,
-              })
-            }
+            settings={{ ...s, timezone: edit.timezone }}
+            onChange={(v) => {
+              try {
+                put(moveRotaEntryDate(edit, v));
+              } catch (error) {
+                setReview([(error as Error).message]);
+              }
+            }}
           />
           <Choices
             values={statuses}
@@ -544,12 +554,14 @@ export function Rota({ state, change, notify }: ScreenProps) {
               onChange={(v) => put({ leaveApproval: v })}
             />
           )}
-          <Field
-            label="Duty code / name (text)"
-            value={edit.duty}
-            onChange={(v) => put({ duty: v })}
-            placeholder="Leading zeroes are preserved"
-          />
+          {edit.status !== "Rest" && (
+            <Field
+              label="Duty code / name (text)"
+              value={edit.duty}
+              onChange={(v) => put({ duty: v })}
+              placeholder="Leading zeroes are preserved"
+            />
+          )}
           {edit.status === "Work" && (
             <>
               <Choices
@@ -581,25 +593,32 @@ export function Rota({ state, change, notify }: ScreenProps) {
                 ))}
               </Row>
               <Row>
-                <Field
-                  label="Start (YYYY-MM-DDTHH:mm)"
+                <DateTimePickerField
+                  label="Start"
                   value={edit.start ?? ""}
                   onChange={(v) => put({ start: v })}
+                  settings={{ ...s, timezone: edit.timezone }}
+                  initialValue={edit.date + "T06:00"}
                 />
-                <Field
-                  label="Finish (YYYY-MM-DDTHH:mm)"
+                <DateTimePickerField
+                  label="Finish"
                   value={edit.end ?? ""}
                   onChange={(v) => put({ end: v })}
+                  settings={{ ...s, timezone: edit.timezone }}
+                  initialValue={edit.date + "T14:18"}
                 />
               </Row>
               <Body muted>
-                For an overnight duty, use the next calendar date for its
-                finish.
+                Times use {edit.timezone}. For an overnight duty, choose the
+                next calendar date for its finish.
               </Body>
-              <Field
+              <DateTimePickerField
                 label="Actual finish (optional)"
                 value={edit.actualEnd ?? ""}
                 onChange={(v) => put({ actualEnd: v || null })}
+                settings={{ ...s, timezone: edit.timezone }}
+                initialValue={edit.end ?? edit.date + "T14:18"}
+                allowClear
               />
               <Row>
                 <Field
@@ -856,7 +875,14 @@ export function Rota({ state, change, notify }: ScreenProps) {
             {state.templates.map((t) => (
               <Row key={t.id} style={{ justifyContent: "space-between" }}>
                 <Body>
-                  {t.name} · {t.duty} · {t.start}–{t.end}
+                  {t.name} · {t.duty} ·{" "}
+                  {pickerText(t.start, (value) =>
+                    formatPickerTime(value, s.clockFormat),
+                  )}
+                  –
+                  {pickerText(t.end, (value) =>
+                    formatPickerTime(value, s.clockFormat),
+                  )}
                 </Body>
                 <Button
                   title="Edit template"
@@ -890,15 +916,17 @@ export function Rota({ state, change, notify }: ScreenProps) {
               onChange={setTemplateCategory}
             />
             <Row>
-              <Field
-                label="Template start HH:mm"
+              <TimePickerField
+                label="Template start"
                 value={templateStart}
                 onChange={setTemplateStart}
+                clockFormat={s.clockFormat}
               />
-              <Field
-                label="Template finish HH:mm"
+              <TimePickerField
+                label="Template finish"
                 value={templateEnd}
                 onChange={setTemplateEnd}
+                clockFormat={s.clockFormat}
               />
             </Row>
             <Button
@@ -910,7 +938,9 @@ export function Rota({ state, change, notify }: ScreenProps) {
                     /^([01]\d|2[0-3]):[0-5]\d$/.test(t),
                   )
                 ) {
-                  notify("Give the template a name and valid HH:mm times.");
+                  notify(
+                    "Give the template a name and choose valid start and finish times.",
+                  );
                   return;
                 }
                 change((a) => ({
@@ -942,10 +972,11 @@ export function Rota({ state, change, notify }: ScreenProps) {
               is allowed; no rotation is assumed. Existing manual duties and
               individual exceptions are preserved.
             </Body>
-            <Field
-              label="Pattern starts YYYY-MM-DD"
+            <DatePickerField
+              label="Pattern starts"
               value={patternStart}
               onChange={setPatternStart}
+              settings={s}
             />
             <Field
               label="Pattern sequence (comma separated)"
@@ -983,10 +1014,11 @@ export function Rota({ state, change, notify }: ScreenProps) {
               {displayDate(anchor, s.dateFormat)}. Existing target entries are
               retained.
             </Body>
-            <Field
-              label="Target week start YYYY-MM-DD"
+            <DatePickerField
+              label="Target week start"
               value={copyTarget}
               onChange={setCopyTarget}
+              settings={s}
             />
             <Button
               title="Copy & review conflicts"

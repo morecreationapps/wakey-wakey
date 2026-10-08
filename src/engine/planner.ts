@@ -1,4 +1,11 @@
-import { Clock, RotaEntry, Settings, ShiftCategory, Task } from "../model";
+import {
+  Clock,
+  RotaEntry,
+  Routine,
+  Settings,
+  ShiftCategory,
+  Task,
+} from "../model";
 import {
   addDays,
   calendarDaysBetween,
@@ -60,6 +67,95 @@ const unique = (values: string[]) => [...new Set(values)];
 const intersects = (a: Interval, b: Interval) =>
   a.start < b.end && b.start < a.end;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Only the app's recognisable saved preparation activities imply an order.
+ * Free-form tasks remain independent; this does not create any new activity. */
+export function preparationActivityKind(
+  title: string,
+): "laundry" | "ironing" | "lunch" | "packing" | undefined {
+  const text = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const matches = [
+    /\blaundry\b|\bwash(?:ing)? (?:work )?clothes\b/.test(text)
+      ? "laundry"
+      : null,
+    /\biron(?:ing)? (?:work )?clothes\b|^ironing$/.test(text)
+      ? "ironing"
+      : null,
+    /\b(?:prepare|prep|make) lunch\b|\blunch preparation\b/.test(text)
+      ? "lunch"
+      : null,
+    /\bpack(?:ing)? (?:work bag|lunch)\b/.test(text) ? "packing" : null,
+  ].filter(Boolean);
+  // A combined activity has one entered duration and cannot be split by inference.
+  return matches.length === 1
+    ? (matches[0] as ReturnType<typeof preparationActivityKind>)
+    : undefined;
+}
+
+function preparationPrerequisites(task: Task, selected: Task[]): Task[] {
+  const kind = preparationActivityKind(task.title);
+  const required =
+    kind === "ironing" ? "laundry" : kind === "packing" ? "lunch" : undefined;
+  if (!required) return [];
+  return selected.filter((other) => {
+    if (
+      other.id === task.id ||
+      preparationActivityKind(other.title) !== required
+    )
+      return false;
+    if (other.linkedShiftId && task.linkedShiftId)
+      return other.linkedShiftId === task.linkedShiftId;
+    // Unlinked activities on unrelated dates must not block a later preparation plan.
+    return (
+      other.earliest.slice(0, 10) <= task.deadline.slice(0, 10) &&
+      other.deadline.slice(0, 10) >= task.earliest.slice(0, 10)
+    );
+  });
+}
+
+export function routinePreparationKind(routine: Routine) {
+  const named = preparationActivityKind(routine.name);
+  if (named) return named;
+  const kinds = unique(
+    routine.includes
+      .map(preparationActivityKind)
+      .filter((k): k is NonNullable<typeof k> => !!k),
+  );
+  return kinds.length === 1 ? kinds[0] : undefined;
+}
+
+/** Preserve each entered combined duration; only order whole selected routines. */
+export function orderedPreparationRoutines(settings: Settings): Routine[] {
+  const ids = new Set<string>();
+  const routines = settings.routines.filter((routine) => {
+    if (!routine.essential || ids.has(routine.id)) return false;
+    ids.add(routine.id);
+    return true;
+  });
+  const ordered: Routine[] = [],
+    visited = new Set<string>();
+  const visit = (routine: Routine) => {
+    if (visited.has(routine.id)) return;
+    visited.add(routine.id);
+    const kind = routinePreparationKind(routine),
+      required =
+        kind === "ironing"
+          ? "laundry"
+          : kind === "packing"
+            ? "lunch"
+            : undefined;
+    if (required)
+      routines
+        .filter((r) => routinePreparationKind(r) === required)
+        .forEach(visit);
+    ordered.push(routine);
+  };
+  routines.forEach(visit);
+  return ordered;
+}
 
 function preferredBedAfter(
   end: number,
@@ -1156,13 +1252,17 @@ export function planTasks(
       /* Invalid work dates already have a visible review reason. */
     }
   });
-  const active = [...new Map(tasks.map((t) => [t.id, t])).values()].filter(
+  const selected = [...new Map(tasks.map((t) => [t.id, t])).values()];
+  const prerequisites = new Map(
+    selected.map((task) => [task.id, preparationPrerequisites(task, selected)]),
+  );
+  const active = selected.filter(
     (t) => !["completed", "skipped", "deferred"].includes(t.state),
   );
   const fixed = active.filter(
     (t) => t.kind === "fixed" || t.locked || !t.movable,
   );
-  const flexible = active
+  const rankedFlexible = active
     .filter((t) => !fixed.includes(t))
     .sort((a, b) => {
       const rank = { essential: 0, flexible: 1, optional: 2, fixed: -1 };
@@ -1173,6 +1273,109 @@ export function planTasks(
         a.id.localeCompare(b.id)
       );
     });
+  // Priority still orders independent work. A selected prerequisite must be
+  // allocated before its dependant even when the dependant has higher priority.
+  const flexible: Task[] = [],
+    visited = new Set<string>();
+  const visit = (task: Task) => {
+    if (visited.has(task.id)) return;
+    visited.add(task.id);
+    for (const before of prerequisites.get(task.id) ?? [])
+      if (rankedFlexible.includes(before)) visit(before);
+    flexible.push(task);
+  };
+  rankedFlexible.forEach(visit);
+  const selectedRoutines = orderedPreparationRoutines(settings);
+  const routineDependency = (task: Task, occurrence: string | undefined) => {
+    const kind = preparationActivityKind(task.title),
+      required =
+        kind === "ironing"
+          ? "laundry"
+          : kind === "packing"
+            ? "lunch"
+            : undefined;
+    if (
+      !required ||
+      !selectedRoutines.some((r) => routinePreparationKind(r) === required)
+    )
+      return undefined;
+    const entry = task.linkedShiftId
+      ? entries.find((e) => e.id === task.linkedShiftId && e.status === "Work")
+      : nextWork(entries, snapshotClock, settings.timezone);
+    if (!entry) return undefined;
+    if (
+      !task.linkedShiftId &&
+      (entry.date < task.earliest.slice(0, 10) ||
+        entry.date > addDays(task.deadline.slice(0, 10), 1))
+    )
+      return undefined;
+    if (
+      occurrence &&
+      occurrence !== entry.date &&
+      occurrence !== addDays(entry.date, -1)
+    )
+      return undefined;
+    const shift = planShift(entry, settings, entries);
+    const prepare = shift.events.find((e) => e.kind === "prepare")?.at;
+    const requiredRoutines = selectedRoutines.filter(
+      (r) => routinePreparationKind(r) === required,
+    );
+    const labels = requiredRoutines.map((r) => `“${r.name}”`).join(" and ");
+    if (prepare === undefined || prep.minutes === null)
+      return { end: null, labels };
+    let cursor = prepare,
+      end = prepare;
+    for (const routine of selectedRoutines) {
+      cursor += routine.minutes! * MINUTE;
+      if (routinePreparationKind(routine) === required) end = cursor;
+    }
+    return { end, labels };
+  };
+  const dependencyReady = (
+    task: Task,
+    occurrence: string | undefined,
+    until: number,
+  ) => {
+    let notBefore = nowMinute;
+    const reasons: string[] = [];
+    for (const before of prerequisites.get(task.id) ?? []) {
+      const occurrenceDay = occurrence ?? task.earliest.slice(0, 10);
+      const state =
+        inactiveOccurrence(before, occurrenceDay) &&
+        !["completed", "skipped", "deferred"].includes(before.state)
+          ? before.occurrenceStates![occurrenceDay]
+          : before.state;
+      if (state === "completed") continue;
+      if (state === "skipped" || state === "deferred") {
+        reasons.push(
+          `“${before.title}” is ${state}; complete it or review the dependency before “${task.title}”.`,
+        );
+        continue;
+      }
+      const candidates = result.filter(
+        (p) =>
+          p.taskId === before.id &&
+          (before.recurrence === "none" || p.occurrenceDate === occurrenceDay),
+      );
+      const usable = candidates
+        .filter((p) => p.end !== null && p.end <= until && !p.conflict)
+        .sort((a, b) => a.end! - b.end!)[0];
+      if (!usable) {
+        reasons.push(
+          `“${before.title}” must finish before “${task.title}”; move or defer the dependent activity while its prerequisite has no safe permitted slot.`,
+        );
+      } else notBefore = Math.max(notBefore, usable.end!);
+    }
+    const routine = routineDependency(task, occurrence);
+    if (routine) {
+      if (routine.end === null || routine.end > until)
+        reasons.push(
+          `${routine.labels} must finish before “${task.title}”; review the selected routine's duration or move/defer the dependent task instead of scheduling it first.`,
+        );
+      else notBefore = Math.max(notBefore, routine.end);
+    }
+    return { notBefore, reasons, routine };
+  };
   for (const task of [...fixed, ...flexible]) {
     if (
       !finiteMinutes(task.minutes) ||
@@ -1350,12 +1553,44 @@ export function planTasks(
         }
         continue;
       }
-      const lower = Math.max(nowMinute, occurrenceStart),
-        upper = Math.min(occurrenceEnd, horizonEnd);
+      let upper = Math.min(occurrenceEnd, horizonEnd);
+      // A booked dependant cannot move. Its prerequisite must fit before the
+      // appointment's reserved travel, or the fixed row will show a conflict.
+      for (const dependant of fixed.filter((other) =>
+        (prerequisites.get(other.id) ?? []).some((p) => p.id === task.id),
+      )) {
+        const booked = result.filter(
+          (p) =>
+            p.taskId === dependant.id &&
+            p.start !== null &&
+            (!recurring ||
+              dependant.recurrence === "none" ||
+              p.occurrenceDate === occurrence),
+        );
+        for (const p of booked)
+          upper = Math.min(upper, p.start! - dependant.travelMinutes * MINUTE);
+      }
+      const dependency = dependencyReady(
+        task,
+        recurring ? occurrence : undefined,
+        upper,
+      );
+      if (dependency.reasons.length) {
+        result.push({
+          ...base,
+          start: null,
+          end: null,
+          reason: dependency.reasons.join(" "),
+        });
+        continue;
+      }
+      const lower = Math.max(nowMinute, occurrenceStart, dependency.notBefore);
       const parts: { start: number; end: number }[] = [];
       let remaining = task.minutes;
       let noSlotReason =
         "No permitted slot fits without reducing sleep, displacing work or taking protected personal time.";
+      if (dependency.routine)
+        noSlotReason += ` ${dependency.routine.labels} must finish first; move or defer “${task.title}” if it cannot fit afterwards.`;
       for (
         let date = localAt(lower, settings.timezone).slice(0, 10);
         date <=
@@ -1428,6 +1663,22 @@ export function planTasks(
         });
       }
     }
+  }
+  // Fixed commitments are retained even when their prerequisites cannot fit;
+  // they receive a visible conflict rather than an invented replacement time.
+  for (const placement of result) {
+    const task = fixed.find((t) => t.id === placement.taskId);
+    if (!task || placement.start === null) continue;
+    const dependency = dependencyReady(
+      task,
+      placement.occurrenceDate,
+      placement.start - task.travelMinutes * MINUTE,
+    );
+    if (dependency.reasons.length)
+      placement.conflict = unique([
+        ...(placement.conflict ? [placement.conflict] : []),
+        ...dependency.reasons,
+      ]).join(" ");
   }
   return result;
 }

@@ -1,18 +1,21 @@
 import React, { useState } from "react";
 import { View, Pressable, Text } from "react-native";
-import { RotaEntry, systemClock, uid } from "../model";
+import { RotaEntry, Settings, systemClock, uid } from "../model";
 import {
-  nextWork,
   planShift,
   transitions,
-  planTasks,
   workBounds,
+  type ShiftPlan,
 } from "../engine/planner";
+import {
+  completePreparationTask,
+  planPreparation,
+  type PreparationPlan,
+} from "../engine/preparation";
 import {
   dateInZone,
   addDays,
   displayDate,
-  displayLocalDateTime,
   isWrittenDateFormat,
   displayTime,
   localAt,
@@ -34,7 +37,16 @@ import {
   Icon,
   ui,
 } from "./components";
-function MissingInputs({ items }: { items: string[] }) {
+import { DatePickerField, DateTimePickerField } from "./DateTimePickers";
+import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
+
+function MissingInputs({
+  items,
+  onSettings,
+}: {
+  items: string[];
+  onSettings?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <View style={ui.section}>
@@ -48,6 +60,15 @@ function MissingInputs({ items }: { items: string[] }) {
         onPress={() => setOpen(!open)}
       />
       {open && <Notice>{items.join(" ")}</Notice>}
+      {onSettings && (
+        <Button
+          title="Complete my settings"
+          secondary
+          small
+          icon="settings"
+          onPress={onSettings}
+        />
+      )}
     </View>
   );
 }
@@ -71,8 +92,15 @@ function SleepDutyCard({
         <Pill text={p.provisional ? "Provisional" : "Planned opportunity"} />
       </Row>
       <Body muted>
-        {entry.category} · {entry.start?.split("T")[1]}–
-        {entry.end?.split("T")[1]} · {entry.timezone}
+        {entry.category} ·{" "}
+        {entry.start
+          ? formatPickerTime(entry.start.slice(11, 16), s.clockFormat)
+          : "Start needed"}
+        –
+        {entry.end
+          ? formatPickerTime(entry.end.slice(11, 16), s.clockFormat)
+          : "Finish needed"}{" "}
+        · {entry.timezone}
       </Body>
       <Row>
         {p.events
@@ -103,143 +131,217 @@ function SleepDutyCard({
     </Card>
   );
 }
+type TimelineIcon = React.ComponentProps<typeof Icon>["name"];
+
+function timelineIcon(kind: string): TimelineIcon {
+  if (kind === "departure" || kind === "travel") return "navigation";
+  if (kind === "wake") return "sun";
+  if (kind === "workStart") return "briefcase";
+  if (["bedtime", "sleepStart", "sleep", "windDown"].includes(kind))
+    return "moon";
+  if (kind === "task" || kind === "routine") return "check-square";
+  return "clock";
+}
+
+/** Both Today cards use the same time box and rounded activity box. */
+function TimelineRow({
+  label,
+  at,
+  end,
+  minutes,
+  status,
+  why,
+  icon,
+  settings,
+  timezone,
+}: {
+  label: string;
+  at: number | null;
+  end?: number | null;
+  minutes?: number | null;
+  status?: string;
+  why: string;
+  icon: TimelineIcon;
+  settings: Settings;
+  timezone: string;
+}) {
+  const c = useTheme();
+  const [expanded, setExpanded] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const startDate = at == null ? null : localAt(at, timezone).slice(0, 10);
+  const endDate = end == null ? null : localAt(end, timezone).slice(0, 10);
+  const untimedLabel = ["Completed", "Skipped", "Deferred"].includes(
+    status ?? "",
+  )
+    ? status
+    : "Not scheduled";
+  const detail = [
+    end == null
+      ? null
+      : `Until ${endDate !== startDate ? displayDate(endDate!, settings.dateFormat) + " " : ""}${displayTime(end, timezone, settings.clockFormat)}`,
+    minutes == null ? null : `${minutes} min`,
+    status,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <View style={{ gap: 8 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${label}, ${at == null ? "not scheduled" : `${displayDate(startDate!, settings.dateFormat)} ${displayTime(at, timezone, settings.clockFormat)}`}${detail ? ", " + detail : ""}. ${at == null ? "View details" : "Why this time?"}`}
+        accessibilityState={{ expanded }}
+        aria-expanded={expanded}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onPress={() => setExpanded(!expanded)}
+        style={({ pressed }) => ({
+          flexDirection: "row",
+          gap: 10,
+          alignItems: "stretch",
+          borderRadius: 12,
+          minHeight: 44,
+          outlineColor: c.accent,
+          outlineWidth: focused || pressed ? 2 : 0,
+          outlineStyle: "solid",
+          outlineOffset: 2,
+          transform: [{ translateY: pressed ? 1 : 0 }],
+        })}
+      >
+        <View
+          style={{
+            width: 98,
+            flexShrink: 0,
+            justifyContent: "center",
+            paddingHorizontal: 6,
+            paddingVertical: 9,
+            backgroundColor: c.accent,
+            borderRadius: 12,
+          }}
+        >
+          <Text
+            style={{
+              color: c.onAccent,
+              fontSize: at == null ? 13 : 19,
+              fontWeight: "500",
+              letterSpacing: -0.6,
+            }}
+          >
+            {at == null
+              ? untimedLabel
+              : displayTime(at, timezone, settings.clockFormat)}
+          </Text>
+          {startDate && (
+            <Text style={{ color: c.onAccent, fontSize: 10, marginTop: 3 }}>
+              {displayDate(startDate, settings.dateFormat)}
+            </Text>
+          )}
+        </View>
+        <View
+          style={{
+            flex: 1,
+            minWidth: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            paddingHorizontal: 8,
+            paddingVertical: 9,
+            backgroundColor: c.accent,
+            borderRadius: 12,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+            <Text
+              style={{
+                fontSize: 14,
+                lineHeight: 20,
+                fontWeight: "600",
+                color: c.onAccent,
+                textDecorationLine: expanded ? "underline" : "none",
+              }}
+            >
+              {label}
+            </Text>
+            {!!detail && (
+              <Text style={{ color: c.onAccent, fontSize: 11, lineHeight: 16 }}>
+                {detail}
+              </Text>
+            )}
+            <Text style={{ color: c.onAccent, fontSize: 11, lineHeight: 16 }}>
+              {at == null ? "View details" : "Why this time?"}{" "}
+              {expanded ? "−" : "+"}
+            </Text>
+          </View>
+          <Icon name={icon} size={18} colour={c.onAccent} />
+        </View>
+      </Pressable>
+      {expanded && (
+        <View
+          style={{
+            padding: 11,
+            backgroundColor: c.card,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: c.line,
+          }}
+        >
+          <Body muted style={{ fontSize: 12 }}>
+            {why}
+          </Body>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export function PlanTimeline({
   entry,
   state,
+  plan,
+  navigate,
 }: {
   entry: RotaEntry;
   state: ScreenProps["state"];
+  plan?: ShiftPlan;
+  navigate?: (tab: string) => void;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null),
-    [focusedEvent, setFocusedEvent] = useState<string | null>(null),
-    c = useTheme(),
-    s = state.settings;
-  const p = planShift(entry, s, state.entries, state.tasks),
-    tz = entry.timezone;
+  const s = state.settings;
+  const p = plan ?? planShift(entry, s, state.entries, state.tasks);
   return (
     <View style={ui.section}>
-      {p.missing.length > 0 && <MissingInputs items={p.missing} />}
+      {p.missing.length > 0 && (
+        <MissingInputs
+          items={p.missing}
+          onSettings={navigate ? () => navigate("Settings") : undefined}
+        />
+      )}
       {p.conflicts.map((x) => (
         <Notice error key={x}>
           {x}
         </Notice>
       ))}
+      {p.conflicts.length > 0 && navigate && (
+        <Button
+          title="Review tasks and conflicts"
+          small
+          secondary
+          icon="alert-triangle"
+          onPress={() => navigate("Plan")}
+        />
+      )}
       {p.events.map((e) => (
-        <View key={e.kind} style={{ gap: 8 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Why this time? ${e.label}`}
-            onFocus={() => setFocusedEvent(e.kind)}
-            onBlur={() => setFocusedEvent(null)}
-            onPress={() => setExpanded(expanded === e.kind ? null : e.kind)}
-            style={({ pressed }) => ({
-              flexDirection: "row",
-              gap: 10,
-              alignItems: "stretch",
-              borderRadius: 12,
-              outlineColor: c.accent,
-              outlineWidth: focusedEvent === e.kind || pressed ? 2 : 0,
-              outlineStyle: "solid",
-              outlineOffset: 2,
-              transform: [{ translateY: pressed ? 1 : 0 }],
-            })}
-          >
-            <View
-              style={{
-                width: 98,
-                flexShrink: 0,
-                justifyContent: "center",
-                paddingHorizontal: 6,
-                paddingVertical: 9,
-                backgroundColor: c.accent,
-                borderRadius: 12,
-              }}
-            >
-              <Text
-                style={{
-                  color: c.onAccent,
-                  fontSize: 19,
-                  fontWeight: "500",
-                  letterSpacing: -0.6,
-                }}
-              >
-                {displayTime(e.at, tz, s.clockFormat)}
-              </Text>
-              <Text style={{ color: c.onAccent, fontSize: 10, marginTop: 3 }}>
-                {displayDate(localAt(e.at, tz).slice(0, 10), s.dateFormat)}
-              </Text>
-            </View>
-            <View
-              style={{
-                flex: 1,
-                minWidth: 0,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                paddingHorizontal: 8,
-                paddingVertical: 9,
-                backgroundColor: c.accent,
-                borderRadius: 12,
-              }}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Body
-                  style={{
-                    fontWeight: "600",
-                    color: c.onAccent,
-                    backgroundColor: c.accent,
-                    textDecorationLine:
-                      expanded === e.kind ? "underline" : "none",
-                  }}
-                >
-                  {e.label}
-                </Body>
-                <Body
-                  style={{
-                    fontSize: 11,
-                    color: c.onAccent,
-                    backgroundColor: c.accent,
-                  }}
-                >
-                  Why this time? {expanded === e.kind ? "−" : "+"}
-                </Body>
-              </View>
-              <Icon
-                name={
-                  e.kind === "departure"
-                    ? "navigation"
-                    : e.kind === "wake"
-                      ? "sun"
-                      : e.kind === "workStart"
-                        ? "briefcase"
-                        : e.kind === "bedtime" || e.kind === "sleepStart"
-                          ? "moon"
-                          : "clock"
-                }
-                size={18}
-                colour={c.onAccent}
-              />
-            </View>
-          </Pressable>
-          {expanded === e.kind && (
-            <View
-              style={{
-                padding: 11,
-                backgroundColor: c.card,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: c.line,
-              }}
-            >
-              <Body muted style={{ fontSize: 12 }}>
-                {e.why}
-              </Body>
-            </View>
-          )}
-        </View>
+        <TimelineRow
+          key={e.kind}
+          label={e.label}
+          at={e.at}
+          why={e.why}
+          icon={timelineIcon(e.kind)}
+          settings={s}
+          timezone={entry.timezone}
+        />
       ))}
       <Body muted style={{ fontSize: 11 }}>
-        Planned sleep is an opportunity, not measured sleep. Times use {tz}.
+        Planned sleep is an opportunity, not measured sleep. Times use{" "}
+        {entry.timezone}.
       </Body>
     </View>
   );
@@ -289,13 +391,8 @@ export function TransitionCard({
         <View key={x.date}>
           <Body>
             {displayDate(x.date, s.dateFormat)} · Bed{" "}
-            {isWrittenDateFormat(s.dateFormat)
-              ? displayLocalDateTime(x.bedtime, s.dateFormat)
-              : x.bedtime}{" "}
-            · Wake{" "}
-            {isWrittenDateFormat(s.dateFormat)
-              ? displayLocalDateTime(x.wake, s.dateFormat)
-              : x.wake}
+            {formatPickerDateTime(x.bedtime, s.dateFormat, s.clockFormat)} ·
+            Wake {formatPickerDateTime(x.wake, s.dateFormat, s.clockFormat)}
           </Body>
           <Body muted style={{ fontSize: 12 }}>
             {x.why}
@@ -305,6 +402,115 @@ export function TransitionCard({
     </Card>
   );
 }
+function PreparationTimeline({
+  plan,
+  state,
+  navigate,
+}: {
+  plan: PreparationPlan;
+  state: ScreenProps["state"];
+  navigate: (tab: string) => void;
+}) {
+  const s = state.settings;
+  const entry = plan.nextShift;
+  const statusLabels: Record<string, string> = {
+    pending: "Planned",
+    accepted: "Accepted",
+    completed: "Completed",
+    skipped: "Skipped",
+    deferred: "Deferred",
+    planned: "Planned",
+    "needs-input": "Needs input",
+    conflict: "Needs moving",
+  };
+  return (
+    <View style={ui.section}>
+      {entry ? (
+        <Body>
+          {plan.preparesFor === "tomorrow"
+            ? "Preparation for tomorrow’s duty"
+            : plan.preparesFor === "today"
+              ? "Preparation for today’s duty"
+              : "Preparation for your next recorded duty"}
+          : {entry.duty || entry.category} ·{" "}
+          {displayDate(entry.date, s.dateFormat)}.
+        </Body>
+      ) : (
+        <>
+          <Body>
+            No future work shift is recorded. Add your next shift to build a
+            timed preparation plan.
+          </Body>
+          <Button
+            title="Add my next shift"
+            icon="calendar"
+            onPress={() => navigate("Rota")}
+          />
+        </>
+      )}
+      {plan.missing.length > 0 && (
+        <MissingInputs
+          items={plan.missing}
+          onSettings={() => navigate("Settings")}
+        />
+      )}
+      {plan.conflicts.map((conflict) => (
+        <Notice error key={conflict}>
+          {conflict}
+        </Notice>
+      ))}
+      {plan.conflicts.length > 0 && (
+        <Button
+          title="Move or defer conflicting tasks"
+          small
+          secondary
+          icon="alert-triangle"
+          onPress={() => navigate("Plan")}
+        />
+      )}
+      {plan.rows.map((row) => (
+        <View key={row.id} style={{ gap: 8 }}>
+          <TimelineRow
+            label={row.label}
+            at={row.at}
+            end={row.end}
+            minutes={row.minutes}
+            status={statusLabels[row.status] ?? row.status}
+            why={row.why}
+            icon={timelineIcon(row.kind)}
+            settings={s}
+            timezone={entry?.timezone ?? s.timezone}
+          />
+          {row.conflict && !plan.conflicts.includes(row.conflict) && (
+            <Notice error>{row.conflict}</Notice>
+          )}
+        </View>
+      ))}
+      {entry && plan.rows.length === 0 && (
+        <Body>
+          The plan needs your preparation and sleep settings. Add only the tasks
+          and routines you want to include.
+        </Body>
+      )}
+      {entry && (
+        <Button
+          title="Edit preparation tasks"
+          small
+          secondary
+          icon="check-square"
+          onPress={() => navigate("Plan")}
+        />
+      )}
+      {entry && (
+        <Body muted style={{ fontSize: 11 }}>
+          Booked commitments stay fixed. Protected sleep is not shortened to fit
+          chores. Times use {entry.timezone}.
+        </Body>
+      )}
+    </View>
+  );
+}
+
 export function Today({
   state,
   change,
@@ -320,6 +526,8 @@ export function Today({
     s = state.settings,
     today = dateInZone(systemClock, s.timezone);
   const [focusedTask, setFocusedTask] = useState<string | null>(null);
+  const [contentWidth, setContentWidth] = useState(0);
+  const wide = contentWidth >= 800;
   const current = state.entries.find((e) => {
     try {
       const w = workBounds(e);
@@ -328,12 +536,17 @@ export function Today({
       return false;
     }
   });
-  const next = current ?? nextWork(state.entries, systemClock, s.timezone),
-    checklistNext = nextWork(state.entries, systemClock, s.timezone);
-  const tr = transitions(state.entries, s, systemClock).find(
-    (t) => t.nextDate <= addDays(today, 14),
+  const preparation = planPreparation(
+    state.entries,
+    state.tasks,
+    s,
+    systemClock,
   );
-  const placements = planTasks(state.tasks, state.entries, s, systemClock);
+  const placements = preparation.placements;
+  const checklistNext = preparation.nextShift;
+  const next = current ?? checklistNext;
+  const todayEntries = state.entries.filter((e) => e.date === today);
+  const restToday = !current && todayEntries.some((e) => e.status === "Rest");
   const pending = state.tasks.filter(
     (t) => !["completed", "skipped"].includes(t.state),
   );
@@ -344,9 +557,16 @@ export function Today({
         (!t.linkedShiftId || t.linkedShiftId === checklistNext?.id),
     )
     .slice(0, 4);
-  const todayEntries = state.entries.filter((e) => e.date === today);
+  const rowStyle = {
+    flexDirection: wide ? ("row" as const) : ("column" as const),
+    alignItems: "stretch" as const,
+    gap: 18,
+  };
   return (
-    <View style={ui.stack}>
+    <View
+      style={ui.stack}
+      onLayout={(event) => setContentWidth(event.nativeEvent.layout.width)}
+    >
       <Row style={{ justifyContent: "space-between" }}>
         <View style={{ gap: 8 }}>
           <Label
@@ -371,41 +591,48 @@ export function Today({
         </View>
         <Pill text="YOUR ACCOUNT" />
       </Row>
-      <View style={[ui.grid, { alignItems: "flex-start" }]}>
-        <View style={[ui.col, ui.stack, { flex: 1.45 }]}>
-          <Card
+      <View style={rowStyle}>
+        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0, padding: 26 }}>
+          <Row style={{ justifyContent: "space-between" }}>
+            <Label>
+              {current
+                ? "Current duty"
+                : restToday
+                  ? "Today"
+                  : "Your next duty"}
+            </Label>
+            <Icon
+              name={restToday ? "sun" : "sunrise"}
+              size={28}
+              colour={c.accent}
+            />
+          </Row>
+          <Text
             style={{
-              backgroundColor: c.card,
-              borderColor: c.line,
-              padding: 26,
+              fontSize: 42,
+              color: c.ink,
+              fontWeight: "500",
+              letterSpacing: -1.6,
             }}
           >
-            <Row style={{ justifyContent: "space-between" }}>
-              <Label>{current ? "Current duty" : "Your next duty"}</Label>
-              <Icon name="sunrise" size={28} colour={c.accent} />
-            </Row>
-            <Text
-              style={{
-                fontSize: 42,
-                color: c.ink,
-                fontWeight: "500",
-                letterSpacing: -1.6,
-              }}
-            >
-              {next?.status === "Work"
+            {restToday
+              ? "Rest day"
+              : next
                 ? `${next.category} shift`
-                : "A little breathing space"}
-            </Text>
-            <Body>
-              {next
-                ? `${next.duty || "Work"} · ${displayDate(next.date, s.dateFormat)} · ${next.start?.split("T")[1]}–${next.end?.split("T")[1]}`
-                : "No upcoming work duty is recorded."}
-            </Body>
-            <Row>
-              <Pill
-                text={
-                  todayEntries.some((e) => e.status === "Rest")
-                    ? "Today · Confirmed rest"
+                : "No next duty recorded"}
+          </Text>
+          <Body>
+            {next
+              ? `${restToday ? "Next duty: " : ""}${next.duty || "Work"} · ${displayDate(next.date, s.dateFormat)} · ${next.start ? formatPickerTime(next.start.slice(11, 16), s.clockFormat) : "Start needed"}–${next.end ? formatPickerTime(next.end.slice(11, 16), s.clockFormat) : "Finish needed"}`
+              : "No upcoming work duty is recorded."}
+          </Body>
+          <Row>
+            <Pill
+              text={
+                current
+                  ? "Today · Working now"
+                  : restToday
+                    ? "Today · Rest day"
                     : todayEntries.some((e) => e.status === "Work")
                       ? "Today · Working"
                       : todayEntries.some(
@@ -423,162 +650,197 @@ export function Today({
                                 )
                               ? "Today · Other leave"
                               : "Today · Rota still needed"
-                }
-              />
-              <Pill text={s.timezone} />
-            </Row>
-            <Body muted>
-              {next
+              }
+            />
+            <Pill text={s.timezone} />
+          </Row>
+          <Body muted>
+            {restToday
+              ? "Today is a recorded rest day. The preparation plan follows your next actual work shift, including any further rest days or leave."
+              : next
                 ? "Prepare for the next actual workday. Your recorded commitments and planned sleep shape the available time."
                 : "Record your rota to connect your shifts, sleep and daily preparation."}
-            </Body>
-            <Button
-              title="Open my rota"
-              secondary
-              icon="calendar"
-              onPress={() => navigate("Rota")}
-            />
-          </Card>
-          <Card>
-            <Row style={{ justifyContent: "space-between" }}>
-              <Heading small>
-                {next
-                  ? "The plan around your next shift"
-                  : "Your daily timeline"}
-              </Heading>
-              <Icon name="clock" colour={c.muted} />
-            </Row>
-            {next ? (
-              <PlanTimeline entry={next} state={state} />
-            ) : (
-              <Body muted>
-                Add a duty to see preparation, departure and sleep opportunities
-                here.
-              </Body>
-            )}
-          </Card>
-        </View>
-        <View style={[ui.col, ui.stack]}>
-          <Card>
-            <Row>
-              <Icon name="check-square" />
-              <Heading small>Prepare for my next shift</Heading>
-            </Row>
-            <Body muted>
-              {checklistNext
-                ? `For ${checklistNext.duty || checklistNext.category} on ${displayDate(checklistNext.date, s.dateFormat)}`
-                : "Your checklist follows the next recorded workday."}
-            </Body>
-            {prep.length === 0 ? (
-              <>
-                <Body>No essential tasks added yet.</Body>
-                <Button
-                  title="Add preparation tasks"
-                  secondary
-                  icon="plus"
-                  onPress={() => navigate("Plan")}
-                />
-              </>
-            ) : (
-              prep.map((t) => {
-                const slot = placements.find((p) => p.taskId === t.id);
-                return (
-                  <View key={t.id} style={{ paddingVertical: 7, gap: 4 }}>
-                    <Row>
-                      <Pressable
-                        accessibilityRole="checkbox"
-                        accessibilityLabel={`Complete ${t.title}`}
-                        accessibilityState={{
-                          checked: t.state === "completed",
-                        }}
-                        onFocus={() => setFocusedTask(t.id)}
-                        onBlur={() => setFocusedTask(null)}
-                        onPress={() => {
-                          change((a) => ({
-                            ...a,
-                            tasks: a.tasks.map((x) =>
-                              x.id === t.id
-                                ? t.recurrence !== "none" &&
-                                  slot?.occurrenceDate
-                                  ? {
-                                      ...x,
-                                      occurrenceStates: {
-                                        ...x.occurrenceStates,
-                                        [slot.occurrenceDate]: "completed",
-                                      },
-                                    }
-                                  : { ...x, state: "completed" }
-                                : x,
-                            ),
-                          }));
-                          notify(
-                            t.recurrence === "none"
-                              ? "Task completed."
-                              : "Next task occurrence completed.",
-                          );
-                        }}
-                        style={({ pressed }) => ({
-                          padding: t.state === "completed" ? 10 : 9,
-                          backgroundColor:
-                            t.state === "completed" ? c.accent : c.card,
-                          borderRadius: 10,
-                          borderWidth: t.state === "completed" ? 0 : 1,
-                          borderColor: c.line,
-                          outlineColor:
-                            t.state === "completed" ? c.onAccent : c.accent,
-                          outlineWidth: focusedTask === t.id || pressed ? 2 : 0,
-                          outlineStyle: "solid",
-                          outlineOffset: t.state === "completed" ? -3 : 1,
-                          transform: [{ translateY: pressed ? 1 : 0 }],
-                        })}
-                      >
-                        <Icon
-                          name={t.state === "completed" ? "check" : "square"}
-                          size={17}
-                          colour={
-                            t.state === "completed" ? c.onAccent : c.accent
-                          }
-                        />
-                      </Pressable>
-                      <View style={{ flex: 1 }}>
-                        <Body style={{ fontWeight: "600" }}>{t.title}</Body>
+          </Body>
+          <Button
+            title="Open my rota"
+            secondary
+            icon="calendar"
+            onPress={() => navigate("Rota")}
+          />
+        </Card>
+        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+          <Row>
+            <Icon name="check-square" />
+            <Heading small>Prepare for my next shift</Heading>
+          </Row>
+          <Body muted>
+            {checklistNext
+              ? `For ${checklistNext.duty || checklistNext.category} on ${displayDate(checklistNext.date, s.dateFormat)}`
+              : "Your checklist follows the next recorded workday."}
+          </Body>
+          {prep.length === 0 ? (
+            <>
+              <Body>No essential tasks added yet.</Body>
+              <Button
+                title="Add preparation tasks"
+                secondary
+                icon="plus"
+                onPress={() => navigate("Plan")}
+              />
+            </>
+          ) : (
+            prep.map((t) => {
+              const slot = placements.find((p) => p.taskId === t.id);
+              const needsOccurrence =
+                t.recurrence !== "none" && !slot?.occurrenceDate;
+              return (
+                <View key={t.id} style={{ paddingVertical: 7, gap: 4 }}>
+                  <Row>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`Complete ${t.title}`}
+                      accessibilityState={{
+                        checked: t.state === "completed",
+                        disabled: needsOccurrence,
+                      }}
+                      disabled={needsOccurrence}
+                      onFocus={() => setFocusedTask(t.id)}
+                      onBlur={() => setFocusedTask(null)}
+                      onPress={() => {
+                        if (needsOccurrence) return;
+                        change((a) => ({
+                          ...a,
+                          tasks: a.tasks.map((x) =>
+                            x.id === t.id
+                              ? completePreparationTask(x, slot?.occurrenceDate)
+                              : x,
+                          ),
+                        }));
+                        notify(
+                          t.recurrence === "none"
+                            ? "Task completed."
+                            : "Next task occurrence completed.",
+                        );
+                      }}
+                      style={({ pressed }) => ({
+                        padding: t.state === "completed" ? 10 : 9,
+                        backgroundColor:
+                          t.state === "completed" ? c.accent : c.card,
+                        borderRadius: 10,
+                        borderWidth: t.state === "completed" ? 0 : 1,
+                        borderStyle: needsOccurrence ? "dashed" : "solid",
+                        borderColor: c.line,
+                        outlineColor:
+                          t.state === "completed" ? c.onAccent : c.accent,
+                        outlineWidth: focusedTask === t.id || pressed ? 2 : 0,
+                        outlineStyle: "solid",
+                        outlineOffset: t.state === "completed" ? -3 : 1,
+                        transform: [{ translateY: pressed ? 1 : 0 }],
+                      })}
+                    >
+                      <Icon
+                        name={
+                          needsOccurrence
+                            ? "lock"
+                            : t.state === "completed"
+                              ? "check"
+                              : "square"
+                        }
+                        size={17}
+                        colour={t.state === "completed" ? c.onAccent : c.accent}
+                      />
+                    </Pressable>
+                    <View style={{ flex: 1 }}>
+                      <Body style={{ fontWeight: "600" }}>{t.title}</Body>
+                      <Body muted style={{ fontSize: 12 }}>
+                        {t.minutes} min ·{" "}
+                        {slot?.start
+                          ? `${displayDate(localAt(slot.start, s.timezone).slice(0, 10), s.dateFormat)} ${displayTime(slot.start, s.timezone, s.clockFormat)}`
+                          : "Needs a feasible slot"}
+                      </Body>
+                      {needsOccurrence && (
                         <Body muted style={{ fontSize: 12 }}>
-                          {t.minutes} min ·{" "}
-                          {slot?.start
-                            ? `${displayDate(localAt(slot.start, s.timezone).slice(0, 10), s.dateFormat)} ${displayTime(slot.start, s.timezone, s.clockFormat)}`
-                            : "Needs a feasible slot"}
+                          Choose an occurrence in Plan to complete this
+                          recurring task.
                         </Body>
-                      </View>
-                    </Row>
-                    {!!slot?.conflict && <Notice>{slot.conflict}</Notice>}
-                  </View>
-                );
-              })
-            )}
-            <Button
-              title="See my plan"
-              secondary
-              icon="arrow-right"
-              onPress={() => navigate("Plan")}
-            />
-          </Card>
-          {tr && <TransitionCard transition={tr} state={state} />}
-          <Card>
-            <Label>Room for recovery</Label>
-            <Heading small>Sleep is part of the plan.</Heading>
-            <Body muted>
-              Chores fit around protected sleep. If everything cannot fit, we
-              show the conflict and keep your target visible.
-            </Body>
-            <Button
-              title="Sleep & wellbeing"
-              secondary
-              icon="moon"
-              onPress={() => navigate("Sleep")}
-            />
-          </Card>
-        </View>
+                      )}
+                    </View>
+                  </Row>
+                  {!!slot?.conflict && <Notice>{slot.conflict}</Notice>}
+                </View>
+              );
+            })
+          )}
+          <Button
+            title="See my plan"
+            secondary
+            icon="arrow-right"
+            onPress={() => navigate("Plan")}
+          />
+        </Card>
       </View>
+      <View style={rowStyle}>
+        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+          <Row style={{ justifyContent: "space-between" }}>
+            <Heading small>The plan around your next shift</Heading>
+            <Icon name="clock" />
+          </Row>
+          {checklistNext && preparation.shiftPlan ? (
+            <PlanTimeline
+              entry={checklistNext}
+              state={state}
+              plan={preparation.shiftPlan}
+              navigate={navigate}
+            />
+          ) : (
+            <>
+              <Body>
+                Add your next recorded work shift to see preparation, departure
+                and sleep opportunities here.
+              </Body>
+              <Button
+                title="Add my next shift"
+                icon="calendar"
+                onPress={() => navigate("Rota")}
+              />
+            </>
+          )}
+        </Card>
+        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+          <Row style={{ justifyContent: "space-between" }}>
+            <Heading small>Shift transition</Heading>
+            <Icon name="shuffle" />
+          </Row>
+          <Pill
+            text={
+              !checklistNext
+                ? "Next shift needed"
+                : preparation.provisional
+                  ? "Provisional"
+                  : "Planned opportunity"
+            }
+          />
+          <PreparationTimeline
+            plan={preparation}
+            state={state}
+            navigate={navigate}
+          />
+        </Card>
+      </View>
+      <Card>
+        <Label>Room for recovery</Label>
+        <Heading small>Sleep is part of the plan.</Heading>
+        <Body muted>
+          Chores fit around protected sleep. If everything cannot fit, we show
+          the conflict and keep your target visible.
+        </Body>
+        <Button
+          title="Sleep & wellbeing"
+          secondary
+          icon="moon"
+          onPress={() => navigate("Sleep")}
+        />
+      </Card>
     </View>
   );
 }
@@ -650,10 +912,25 @@ export function Sleep({ state, change, notify }: ScreenProps) {
           Self-reported estimates, never automatically measured. Past logs
           remain separate from generated plans.
         </Body>
-        <Field label="Diary date YYYY-MM-DD" value={date} onChange={setDate} />
+        <DatePickerField
+          label="Diary date"
+          value={date}
+          onChange={setDate}
+          settings={s}
+        />
         <Row>
-          <Field label="Approximate bedtime" value={bed} onChange={setBed} />
-          <Field label="Wake date/time" value={wake} onChange={setWake} />
+          <DateTimePickerField
+            label="Approximate bedtime"
+            value={bed}
+            onChange={setBed}
+            settings={s}
+          />
+          <DateTimePickerField
+            label="Wake date and time"
+            value={wake}
+            onChange={setWake}
+            settings={s}
+          />
         </Row>
         <Row>
           <Field
@@ -683,7 +960,7 @@ export function Sleep({ state, change, notify }: ScreenProps) {
               if (w <= b) throw Error("Wake must follow bedtime.");
               addDays(date, 0);
               if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
-                throw Error("Use an ISO diary date.");
+                throw Error("Choose a valid diary date.");
               if (
                 (minutes && !/^\d+$/.test(minutes)) ||
                 (awakenings && !/^\d+$/.test(awakenings))
@@ -718,11 +995,18 @@ export function Sleep({ state, change, notify }: ScreenProps) {
         {state.sleepLogs.length > 0 && (
           <Body muted>
             {state.sleepLogs.length} check-ins,{" "}
-            {state.sleepLogs.map((l) => l.date).sort()[0]} to{" "}
-            {state.sleepLogs
-              .map((l) => l.date)
-              .sort()
-              .at(-1)}
+            {displayDate(
+              state.sleepLogs.map((l) => l.date).sort()[0],
+              s.dateFormat,
+            )}{" "}
+            to{" "}
+            {displayDate(
+              state.sleepLogs
+                .map((l) => l.date)
+                .sort()
+                .at(-1)!,
+              s.dateFormat,
+            )}
             . Missing dates are unrecorded; no sleep-debt estimate is
             calculated.
           </Body>

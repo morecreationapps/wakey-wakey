@@ -28,6 +28,10 @@ import {
   toClockParts,
 } from "./pickerValues";
 
+type DatePickerSettings = Pick<
+  Settings,
+  "dateFormat" | "firstDay" | "timezone"
+>;
 type PickerSettings = Pick<
   Settings,
   "dateFormat" | "clockFormat" | "firstDay" | "timezone"
@@ -103,11 +107,15 @@ function PickerTrigger({
   label,
   text,
   calendar,
+  dateOnly,
+  hint,
   onPress,
 }: {
   label: string;
   text: string;
   calendar?: boolean;
+  dateOnly?: boolean;
+  hint?: string;
   onPress: () => void;
 }) {
   const c = useTheme();
@@ -121,7 +129,11 @@ function PickerTrigger({
         accessibilityRole="button"
         accessibilityLabel={`${label}: ${text}`}
         accessibilityHint={
-          calendar ? "Opens the calendar and clock" : "Opens the clock"
+          dateOnly
+            ? "Opens the calendar"
+            : calendar
+              ? "Opens the calendar and clock"
+              : "Opens the clock"
         }
         onPress={onPress}
         onFocus={() => setFocused(true)}
@@ -149,6 +161,11 @@ function PickerTrigger({
           {text}
         </Text>
       </Pressable>
+      {!!hint && (
+        <Text style={{ color: c.muted, fontSize: 11, lineHeight: 16 }}>
+          {hint}
+        </Text>
+      )}
     </View>
   );
 }
@@ -162,6 +179,7 @@ function PickerDialog({
   children,
   onCancel,
   onConfirm,
+  onClear,
 }: {
   visible: boolean;
   title: string;
@@ -171,6 +189,7 @@ function PickerDialog({
   children: React.ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
+  onClear?: () => void;
 }) {
   const c = useTheme();
   const { height } = useWindowDimensions();
@@ -256,6 +275,9 @@ function PickerDialog({
           </ScrollView>
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Choice label="Cancel" onPress={onCancel} style={{ flex: 1 }} />
+            {onClear && (
+              <Choice label="Clear" onPress={onClear} style={{ flex: 1 }} />
+            )}
             <Choice
               label="Set"
               filled
@@ -280,7 +302,7 @@ function Calendar({
   selected: string;
   anchor: string;
   today: string;
-  settings: PickerSettings;
+  settings: DatePickerSettings;
   onMonth: (date: string) => void;
   onSelect: (date: string) => void;
 }) {
@@ -552,16 +574,94 @@ function Clock({
   );
 }
 
+export function DatePickerField({
+  label,
+  value,
+  onChange,
+  settings,
+  allowClear = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  settings: DatePickerSettings;
+  allowClear?: boolean;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [anchor, setAnchor] = useState("");
+  let display = "Choose date";
+  let valid = false;
+  try {
+    shiftCalendarMonth(value, 0);
+    display = displayDate(value, settings.dateFormat);
+    valid = true;
+  } catch {
+    /* Unknown or invalid saved values remain untouched until confirmation. */
+  }
+  return (
+    <>
+      <PickerTrigger
+        label={label}
+        text={display}
+        calendar
+        dateOnly
+        onPress={() => {
+          const initial = valid
+            ? value
+            : dateInZone(systemClock, settings.timezone);
+          setDraft(initial);
+          setAnchor(shiftCalendarMonth(initial, 0));
+          setVisible(true);
+        }}
+      />
+      {visible && (
+        <PickerDialog
+          visible
+          title={label}
+          summary={displayDate(draft, settings.dateFormat)}
+          onCancel={() => setVisible(false)}
+          onClear={
+            allowClear
+              ? () => {
+                  setVisible(false);
+                  onChange("");
+                }
+              : undefined
+          }
+          onConfirm={() => {
+            setVisible(false);
+            onChange(draft);
+          }}
+        >
+          <Calendar
+            selected={draft}
+            anchor={anchor}
+            today={dateInZone(systemClock, settings.timezone)}
+            settings={settings}
+            onMonth={setAnchor}
+            onSelect={setDraft}
+          />
+        </PickerDialog>
+      )}
+    </>
+  );
+}
+
 export function DateTimePickerField({
   label,
   value,
   onChange,
   settings,
+  allowClear = false,
+  initialValue,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   settings: PickerSettings;
+  allowClear?: boolean;
+  initialValue?: string;
 }) {
   const [visible, setVisible] = useState(false);
   const [draft, setDraft] = useState("");
@@ -580,9 +680,19 @@ export function DateTimePickerField({
     /* Incomplete form values stay untouched until the user chooses Set. */
   }
   const open = () => {
-    const initial = valid
-      ? value
-      : localAt(systemClock.now(), settings.timezone);
+    let initial = valid ? value : localAt(systemClock.now(), settings.timezone);
+    if (!valid && initialValue) {
+      try {
+        formatPickerDateTime(
+          initialValue,
+          settings.dateFormat,
+          settings.clockFormat,
+        );
+        initial = initialValue;
+      } catch {
+        /* An invalid proposed draft never replaces the current saved value. */
+      }
+    }
     setDraft(initial);
     setAnchor(shiftCalendarMonth(initial.slice(0, 10), 0));
     setPanel("date");
@@ -603,6 +713,14 @@ export function DateTimePickerField({
           panel={panel}
           setPanel={setPanel}
           onCancel={() => setVisible(false)}
+          onClear={
+            allowClear
+              ? () => {
+                  setVisible(false);
+                  onChange("");
+                }
+              : undefined
+          }
           onConfirm={() => {
             setVisible(false);
             onChange(draft);
@@ -635,11 +753,15 @@ export function TimePickerField({
   value,
   onChange,
   clockFormat,
+  allowClear = false,
+  hint,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   clockFormat: Settings["clockFormat"];
+  allowClear?: boolean;
+  hint?: string;
 }) {
   const [visible, setVisible] = useState(false);
   const [draft, setDraft] = useState("00:00");
@@ -656,6 +778,7 @@ export function TimePickerField({
       <PickerTrigger
         label={label}
         text={display}
+        hint={hint}
         onPress={() => {
           setDraft(valid ? value : "00:00");
           setVisible(true);
@@ -667,6 +790,14 @@ export function TimePickerField({
           title={label}
           summary={formatPickerTime(draft, clockFormat)}
           onCancel={() => setVisible(false)}
+          onClear={
+            allowClear
+              ? () => {
+                  setVisible(false);
+                  onChange("");
+                }
+              : undefined
+          }
           onConfirm={() => {
             setVisible(false);
             onChange(draft);

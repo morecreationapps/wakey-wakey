@@ -20,6 +20,8 @@ import { initialState, starterTemplates } from "../data/defaults";
 import { nextWork, planShift } from "../engine/planner";
 import { displayTime } from "../engine/time";
 import { systemClock } from "../model";
+import { TimePickerField } from "./DateTimePickers";
+import { formatPickerTime } from "./pickerValues";
 const steps = [
   "Welcome",
   "Work",
@@ -78,17 +80,29 @@ export function SettingsFields({
       />
     );
   }
-  function time(key: keyof Settings, label: string) {
+  function time(
+    key:
+      | "earlyBed"
+      | "earlyWake"
+      | "lateBed"
+      | "lateWake"
+      | "restBed"
+      | "restWake",
+    label: string,
+  ) {
     return (
-      <Field
+      <TimePickerField
         label={label}
-        value={String(s[key] ?? "")}
-        placeholder="HH:mm · optional"
-        onChange={(v) => put(key, (v || null) as never)}
+        value={s[key] ?? ""}
+        onChange={(v) => put(key, v || null)}
+        clockFormat={s.clockFormat}
+        allowClear
         hint={
           s[key] === null
             ? "Still needed — affected plans stay provisional"
-            : "Entered by you"
+            : s.origins[key] === "suggested"
+              ? "Suggested starting value — editable"
+              : "Entered by you"
         }
       />
     );
@@ -175,7 +189,10 @@ export function SettingsFields({
         </Body>
         <Row>
           {state.templates.map((t) => (
-            <Pill key={t.id} text={`${t.category} ${t.start}–${t.end}`} />
+            <Pill
+              key={t.id}
+              text={`${t.category} ${formatPickerTime(t.start, s.clockFormat)}–${formatPickerTime(t.end, s.clockFormat)}`}
+            />
           ))}
         </Row>
       </View>
@@ -331,7 +348,8 @@ export function SettingsFields({
             }))
           }
         />
-        <Heading small>Usual times · 24-hour input</Heading>
+        <Heading small>Usual times</Heading>
+        <Body muted>Times use {s.timezone}.</Body>
         <Row>
           {time("earlyBed", "Early-shift bedtime")}
           {time("earlyWake", "Early-shift wake")}
@@ -345,8 +363,8 @@ export function SettingsFields({
           {time("restWake", "Rest-day wake")}
         </Row>
         <Body muted>
-          Leave unknown times blank. Late-shift waking is based on your
-          preferences and commitments, never simply the preparation deadline.
+          Clear unknown times. Late-shift waking is based on your preferences
+          and commitments, never simply the preparation deadline.
         </Body>
         <Toggle
           label="Prefer a consistent wake-up time"
@@ -449,7 +467,7 @@ export function Setup({ state, change, notify }: ScreenProps) {
           !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(s[k as keyof Settings])),
       )
     ) {
-      notify("Use 24-hour HH:mm for usual sleep times, or leave them blank.");
+      notify("Choose valid usual sleep times, or clear unknown times.");
       return;
     }
     change((a) => ({
