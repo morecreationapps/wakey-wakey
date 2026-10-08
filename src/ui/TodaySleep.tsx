@@ -468,24 +468,39 @@ function PreparationTimeline({
           onPress={() => navigate("Plan")}
         />
       )}
-      {plan.rows.map((row) => (
-        <View key={row.id} style={{ gap: 8 }}>
-          <TimelineRow
-            label={row.label}
-            at={row.at}
-            end={row.end}
-            minutes={row.minutes}
-            status={statusLabels[row.status] ?? row.status}
-            why={row.why}
-            icon={timelineIcon(row.kind)}
-            settings={s}
-            timezone={entry?.timezone ?? s.timezone}
-          />
-          {row.conflict && !plan.conflicts.includes(row.conflict) && (
-            <Notice error>{row.conflict}</Notice>
-          )}
-        </View>
-      ))}
+      {plan.rows.map((row) => {
+        const durationSetting =
+          row.routineId ??
+          (row.kind === "windDown"
+            ? "windDown"
+            : row.kind === "bedtime"
+              ? "latency"
+              : row.kind === "sleepStart"
+                ? "sleepTarget"
+                : undefined);
+        const suggestedDuration =
+          row.minutes != null &&
+          durationSetting != null &&
+          s.origins[durationSetting] === "suggested";
+        return (
+          <View key={row.id} style={{ gap: 8 }}>
+            <TimelineRow
+              label={row.label}
+              at={row.at}
+              end={row.end}
+              minutes={row.minutes}
+              status={`${statusLabels[row.status] ?? row.status}${suggestedDuration ? " · Suggested duration — editable" : ""}`}
+              why={row.why}
+              icon={timelineIcon(row.kind)}
+              settings={s}
+              timezone={entry?.timezone ?? s.timezone}
+            />
+            {row.conflict && !plan.conflicts.includes(row.conflict) && (
+              <Notice error>{row.conflict}</Notice>
+            )}
+          </View>
+        );
+      })}
       {entry && plan.rows.length === 0 && (
         <Body>
           The plan needs your preparation and sleep settings. Add only the tasks
