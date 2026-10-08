@@ -361,7 +361,7 @@ export function TransitionCard({
     <Card>
       <Row>
         <Icon name="shuffle" />
-        <Label>Shift transition</Label>
+        <Label>Shift Transition</Label>
         <Pill
           text={transition.provisional ? "Provisional" : "Planning estimate"}
         />
@@ -506,8 +506,8 @@ function PreparationTimeline({
       })}
       {entry && plan.rows.length === 0 && (
         <Body>
-          The plan needs your preparation and sleep settings. Add only the tasks
-          and routines you want to include.
+          No preparation tasks have been added yet. Choose an idea or add a task
+          in Prepare for my next shift to start your schedule.
         </Body>
       )}
       {entry && (
@@ -814,7 +814,7 @@ export function Today({
       <View style={rowStyle}>
         <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
           <Row style={{ justifyContent: "space-between" }}>
-            <Heading small>Shift transition</Heading>
+            <Heading small>Shift Transition</Heading>
             <Icon name="shuffle" />
           </Row>
           <Pill

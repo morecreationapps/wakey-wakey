@@ -7,7 +7,7 @@ import {
   recognizePreparationActivity,
   suggestPreparationTask,
 } from "../src/engine/taskSuggestions";
-import { planShift } from "../src/engine/planner";
+import { planShift, planTasks } from "../src/engine/planner";
 import {
   addDays,
   localAt,
@@ -142,6 +142,250 @@ function suggested(
 }
 
 describe("task-aware day-before suggestions", () => {
+  it.each([
+    "Laundry and iron work clothes",
+    "Wash clothes and iron my uniform",
+    "Laundry, iron work clothes",
+    "Laundry; iron my clothes",
+  ])(
+    "leaves the combined activity %s for the user's own duration and schedule",
+    (title) => {
+      expect(recognizePreparationActivity(title)).toBeUndefined();
+      expect(
+        suggestPreparationTask(
+          title,
+          [rest("2026-10-09"), shift()],
+          [],
+          settings(),
+          clock(),
+        ),
+      ).toBeNull();
+    },
+  );
+  it("uses existing suggested values and unconfirmed availability only for an editable preparation suggestion", () => {
+    const entry = shift("Late"),
+      unknown = { ...rest("2026-10-09"), status: "Unknown" as const },
+      entries = [unknown, entry],
+      s = settings({
+        restBed: null,
+        origins: {
+          ...settings().origins,
+          sleepTarget: "suggested",
+          windDown: "suggested",
+          outboundMax: "suggested",
+        },
+      }),
+      before = JSON.stringify({ entries, s }),
+      v = suggestPreparationTask("Iron my clothes", entries, [], s, clock())!;
+    expect(v.preparationDate).toBe("2026-10-09");
+    expect(v.earliest.slice(0, 10)).toBe("2026-10-09");
+    expect(v.scheduledStart).not.toBeNull();
+    expect(v.kind).toBe("essential");
+    expect(v.conflict).toContain("existing starting values");
+    expect(v.conflict).toContain(
+      "Availability on the preparation day is unconfirmed",
+    );
+    expect(v.conflict).toContain("full sleep target");
+    const task = base("iron", "Iron my clothes", {
+      ...v,
+      deadline: "2026-10-09T23:59",
+      windowStart: "00:00",
+      windowEnd: "00:00",
+      omittedFields: ["deadline", "windowStart", "windowEnd", "travelMinutes"],
+    });
+    const p = planPreparation(entries, [task], s, clock());
+    expect(p.rows.filter((r) => r.taskId === task.id)).toHaveLength(1);
+    expect(
+      localAt(p.rows.find((r) => r.taskId === task.id)!.at!, zone).slice(0, 10),
+    ).toBe("2026-10-09");
+    expect(p.rows.find((r) => r.taskId === task.id)?.conflict).toContain(
+      "unconfirmed",
+    );
+    expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [task]));
+    expect(
+      planTasks(
+        [task],
+        entries,
+        s,
+        { now: () => onDate("2026-10-09", "00:00", zone) },
+        2,
+      ).find((p) => p.taskId === task.id)?.start,
+    ).toBeNull();
+    expect(JSON.stringify({ entries, s })).toBe(before);
+  });
+  it("protects fixed commitments when the preparation day's availability is unconfirmed", () => {
+    const entry = shift("Early"),
+      s = settings(),
+      entries = [{ ...rest("2026-10-09"), status: "Unknown" as const }, entry],
+      fixed = base("booking", "Booked haircut", {
+        kind: "fixed",
+        earliest: "2026-10-09T19:00",
+        scheduledStart: "2026-10-09T19:00",
+        minutes: 30,
+        movable: false,
+        locked: true,
+      }),
+      v = suggestPreparationTask(
+        "Shower for bed",
+        entries,
+        [fixed],
+        s,
+        clock(),
+      )!;
+    expect(v.earliest).toBe("2026-10-09T18:30");
+    expect(v.conflict).toContain("unconfirmed");
+    const shower = base("shower", "Shower for bed", {
+        ...v,
+        deadline: "2026-10-09T23:59",
+        windowStart: "00:00",
+        windowEnd: "00:00",
+      }),
+      p = planPreparation(entries, [fixed, shower], s, clock());
+    expect(p.rows.find((r) => r.taskId === fixed.id)?.at).toBe(
+      zonedEpoch("2026-10-09T19:00", zone),
+    );
+    expect(p.rows.find((r) => r.taskId === shower.id)?.end).toBe(
+      p.rows.find((r) => r.taskId === fixed.id)?.at,
+    );
+    expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [fixed, shower]));
+  });
+  it("retains an entered bedtime task timestamp when missing wake inputs prevent reviewing the routine", () => {
+    const entry = shift("Late"),
+      s = settings({ lateWake: null, restWake: null, consistentWake: false }),
+      entries = [{ ...rest("2026-10-09"), status: "Unknown" as const }, entry],
+      shower = base("entered", "Shower for bed", {
+        kind: "fixed",
+        earliest: "2026-10-09T22:24",
+        scheduledStart: "2026-10-09T22:24",
+        locked: true,
+        movable: false,
+        preparationAutoStart: false,
+      }),
+      before = JSON.stringify(shower),
+      p = planPreparation(entries, [shower], s, clock());
+    expect(p.rows.find((r) => r.taskId === shower.id)?.at).toBe(
+      zonedEpoch("2026-10-09T22:24", zone),
+    );
+    expect(p.rows.find((r) => r.taskId === shower.id)?.conflict).toContain(
+      "entered start is retained",
+    );
+    expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [shower]));
+    expect(JSON.stringify(shower)).toBe(before);
+    const v = suggestPreparationTask(
+      "Shower for bed",
+      entries,
+      [],
+      s,
+      clock(),
+    )!;
+    expect(v.preparationDate).toBe("2026-10-09");
+    expect(v.earliest).toBe("");
+    expect(v.conflict).toMatch(
+      /^Enter your usual Late-shift wake time in Settings/,
+    );
+    expect(v.explanation).toContain("a start time needs the missing inputs");
+  });
+  it("orders typed ironing aliases after selected laundry and leaves completed laundry completed", () => {
+    const entry = shift("Late"),
+      s = settings(),
+      entries = [rest("2026-10-09"), entry],
+      laundry = base("laundry", "Laundry", { minutes: 45, priority: 1 }),
+      iron = base("iron", "Iron my clothes", {
+        priority: 3,
+        preparationAutoStart: true,
+      });
+    const p = planPreparation(entries, [iron, laundry], s, clock());
+    expect(
+      p.placements.find((p) => p.taskId === iron.id)!.start,
+    ).not.toBeNull();
+    expect(
+      p.placements.find((p) => p.taskId === iron.id)!.start!,
+    ).toBeGreaterThanOrEqual(
+      p.placements.find((p) => p.taskId === laundry.id)!.end!,
+    );
+    const done = planPreparation(
+      entries,
+      [iron, { ...laundry, state: "completed" }],
+      s,
+      clock(),
+    );
+    expect(done.rows.find((r) => r.taskId === laundry.id)?.status).toBe(
+      "completed",
+    );
+    expect(done.placements.some((p) => p.taskId === laundry.id)).toBe(false);
+    expect(
+      done.placements.find((p) => p.taskId === iron.id)?.start,
+    ).not.toBeNull();
+  });
+  it.each([
+    ["Shower", "shower", 30],
+    ["Have a shower", "shower", 30],
+    ["Shower before bedtime", "shower", 30],
+    ["Bedtime shower", "shower", 30],
+    ["Iron my clothes", "ironing", 30],
+    ["Ironing uniform", "ironing", 30],
+    ["Get a hair cut", "haircut", 30],
+    ["Cut my hair", "haircut", 30],
+    ["Meal before bed", "meal", 30],
+    ["Winding down", "windDown", 60],
+    ["Sleep", "sleep", 30],
+  ] as const)(
+    "recognises typed %s and gives the same task-aware previous-day suggestion",
+    (title, activity, minutes) => {
+      const entry = shift("Late"),
+        s = settings();
+      expect(recognizePreparationActivity(title)).toBe(activity);
+      const v = suggestPreparationTask(
+        title,
+        [rest("2026-10-09"), entry],
+        [],
+        s,
+        clock(),
+      )!;
+      expect(v.minutes).toBe(minutes);
+      expect(v.preparationDate).toBe("2026-10-09");
+      expect(v.scheduledStart).not.toBeNull();
+      expect(v.earliest.slice(0, 10)).toBe("2026-10-09");
+      expect(v.deadline).toBe("");
+      expect(v.windowStart).toBe("");
+      expect(v.windowEnd).toBe("");
+      expect(v).not.toHaveProperty("location");
+    },
+  );
+  it("keeps the known previous calendar date and task duration when missing personal settings prevent a safe clock suggestion", () => {
+    const entry = shift("Late"),
+      s = {
+        ...newSettings(),
+        timezoneConfirmed: true,
+        outboundMin: 15,
+        outboundMax: 20,
+      };
+    const before = JSON.stringify(s),
+      v = suggestPreparationTask(
+        "Shower for bed",
+        [rest("2026-10-09"), entry],
+        [],
+        s,
+        clock(),
+      )!;
+    expect(v.preparationDate).toBe("2026-10-09");
+    expect(v.minutes).toBe(30);
+    expect(v.earliest).toBe("");
+    expect(v.scheduledStart).toBeNull();
+    expect(v.conflict).toBeTruthy();
+    const iron = suggestPreparationTask(
+      "Iron my clothes",
+      [rest("2026-10-09"), entry],
+      [],
+      s,
+      clock(),
+    )!;
+    expect(iron.preparationDate).toBe("2026-10-09");
+    expect(iron.minutes).toBe(30);
+    expect(iron.earliest).toBe("");
+    expect(iron.conflict).toBeTruthy();
+    expect(JSON.stringify(s)).toBe(before);
+  });
   it.each([
     ["Early", "06:00", "19:00"],
     ["Late", "14:08", "22:00"],

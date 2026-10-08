@@ -81,7 +81,9 @@ export function preparationActivityKind(
     /\blaundry\b|\bwash(?:ing)? (?:work )?clothes\b/.test(text)
       ? "laundry"
       : null,
-    /\biron(?:ing)? (?:work )?clothes\b|^ironing$/.test(text)
+    /\b(?:iron|ironing)(?: (?:my|your|their|the))?(?: work)? (?:clothes|shirts?|uniform)\b|^ironing$/.test(
+      text,
+    )
       ? "ironing"
       : null,
     /\b(?:prepare|prep|make) lunch\b|\blunch preparation\b/.test(text)

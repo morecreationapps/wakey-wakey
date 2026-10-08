@@ -13,9 +13,10 @@ export type PreparationSuggestionValues = Pick<
   | "windowStart"
   | "windowEnd"
   | "linkedShiftId"
->;
+> & { preparationDate?: string; kind?: Task["kind"] };
 
-const suggestedFields: (keyof PreparationSuggestionValues)[] = [
+const suggestedFields: (keyof Task & keyof PreparationSuggestionValues)[] = [
+  "kind",
   "minutes",
   "earliest",
   "scheduledStart",
@@ -33,7 +34,7 @@ export function applyTaskSuggestion(
 ): Task {
   const patch: Partial<Task> = {};
   for (const field of suggestedFields) {
-    if (!edited.has(field))
+    if (!edited.has(field) && suggestion[field] !== undefined)
       Object.assign(patch, { [field]: suggestion[field] });
   }
   const result = { ...task, ...patch };
@@ -47,6 +48,57 @@ export function applyTaskSuggestion(
     autoStart ? { ...result, preparationAutoStart: true } : result,
     explicitTime,
   );
+}
+
+/** Idea buttons and typed names use the same reversible draft-only defaults. */
+export function resolveTaskDraftSuggestion(
+  task: Task,
+  suggestion: PreparationSuggestionValues | null,
+  edited: ReadonlySet<TaskDraftField>,
+  baseline: Task,
+): Task {
+  if (suggestion) return applyTaskSuggestion(task, suggestion, edited);
+  const patch: Partial<Task> = {};
+  for (const field of suggestedFields) {
+    if (!edited.has(field)) Object.assign(patch, { [field]: baseline[field] });
+  }
+  if (!edited.has("earliest") && !edited.has("scheduledStart"))
+    patch.preparationAutoStart = baseline.preparationAutoStart;
+  return taskTimeProvenance({ ...task, ...patch });
+}
+
+/** A known calendar date remains visible even when a safe clock is unavailable. */
+export function taskDraftTiming(
+  task: Task,
+  preparationDate?: string,
+  storageTimezone?: string,
+  displayTimezone?: string,
+): { date: string; time: string } {
+  let start = task.scheduledStart || task.earliest;
+  if (start && storageTimezone && displayTimezone) {
+    try {
+      start = localAt(zonedEpoch(start, storageTimezone), displayTimezone);
+    } catch {
+      // Incomplete draft values stay unchanged until the person chooses a time.
+    }
+  }
+  return {
+    date: start ? start.slice(0, 10) : preparationDate || "",
+    time: start ? start.slice(11, 16) : "",
+  };
+}
+
+/** Convert a picked preparation clock back to the app's canonical task timezone. */
+export function taskDraftStartValue(
+  date: string,
+  time: string,
+  displayTimezone: string,
+  storageTimezone: string,
+): string {
+  return localAt(
+    zonedEpoch(`${date}T${time}`, displayTimezone),
+    storageTimezone,
+  ).slice(0, 16);
 }
 
 /** A chosen time or locked commitment must never become an automatic start. */

@@ -22,13 +22,19 @@ import {
   Notice,
   ui,
 } from "./components";
-import { DateTimePickerField, TimePickerField } from "./DateTimePickers";
+import {
+  DatePickerField,
+  DateTimePickerField,
+  TimePickerField,
+} from "./DateTimePickers";
 import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
 import {
-  applyTaskSuggestion,
+  resolveTaskDraftSuggestion,
   snapshotTaskPlacement,
   taskForEditing,
   taskForSaving,
+  taskDraftTiming,
+  taskDraftStartValue,
   taskSuggestionOverrides,
   taskTimeProvenance,
   withOptionalTaskField,
@@ -46,7 +52,8 @@ function pickerText(value: string, format: (value: string) => string): string {
 export function Plan({ state, change, notify }: ScreenProps) {
   const s = state.settings,
     preparation = planPreparation(state.entries, state.tasks, s, systemClock),
-    next = preparation.nextShift;
+    next = preparation.nextShift,
+    preparationTimezone = next?.timezone ?? s.timezone;
   const nextShiftTime = next?.start
     ? pickerText(next.start.slice(11, 16), (value) =>
         formatPickerTime(value, s.clockFormat),
@@ -55,9 +62,13 @@ export function Plan({ state, change, notify }: ScreenProps) {
   const [edit, setEdit] = useState<Task | null>(null),
     [includeDone, setIncludeDone] = useState(false),
     [suggestionNotice, setSuggestionNotice] = useState(""),
-    [suggestionConflict, setSuggestionConflict] = useState("");
+    [suggestionConflict, setSuggestionConflict] = useState(""),
+    [draftDate, setDraftDate] = useState("");
   const editedFields = useRef(new Set<TaskDraftField>());
   const editingSavedTask = useRef(false);
+  const preparationContext = useRef(false);
+  const baselineDraft = useRef<Task | null>(null);
+  const chosenDraftDate = useRef<string | null>(null);
   const slots = next
     ? preparation.placements
     : planTasks(state.tasks, state.entries, s, systemClock);
@@ -80,7 +91,8 @@ export function Plan({ state, change, notify }: ScreenProps) {
         overrides,
         next,
       ) ??
-      (task.linkedShiftId
+      (preparationContext.current ||
+      (editedFields.current.has("linkedShiftId") && task.linkedShiftId)
         ? defaultPreparationTaskStart(
             state.entries,
             state.tasks,
@@ -92,9 +104,40 @@ export function Plan({ state, change, notify }: ScreenProps) {
         : null);
     setSuggestionNotice(suggestion?.explanation ?? "");
     setSuggestionConflict(suggestion?.conflict ?? "");
-    return suggestion
-      ? applyTaskSuggestion(task, suggestion, editedFields.current)
-      : task;
+    let result = resolveTaskDraftSuggestion(
+      task,
+      suggestion,
+      editedFields.current,
+      baselineDraft.current ?? task,
+    );
+    const timing = taskDraftTiming(
+      result,
+      suggestion?.preparationDate,
+      s.timezone,
+      preparationTimezone,
+    );
+    if (chosenDraftDate.current && timing.time) {
+      try {
+        const chosenStart = taskDraftStartValue(
+          chosenDraftDate.current,
+          timing.time,
+          preparationTimezone,
+          s.timezone,
+        );
+        result = taskTimeProvenance(
+          { ...result, earliest: chosenStart, scheduledStart: chosenStart },
+          true,
+        );
+      } catch (error) {
+        result = taskTimeProvenance(
+          { ...result, earliest: "", scheduledStart: null },
+          true,
+        );
+        setSuggestionConflict((error as Error).message);
+      }
+    }
+    setDraftDate(chosenDraftDate.current ?? timing.date);
+    return result;
   }
   function create(
     kind: Task["kind"] = "flexible",
@@ -103,37 +146,34 @@ export function Plan({ state, change, notify }: ScreenProps) {
   ) {
     editedFields.current = new Set();
     editingSavedTask.current = false;
-    setEdit(
-      suggest({
-        id: uid("task"),
-        title,
-        kind,
-        minutes: 30,
-        deadline: "",
-        earliest:
-          forPreparation && next
-            ? ""
-            : localAt(systemClock.now(), s.timezone).slice(0, 16),
-        windowStart: "",
-        windowEnd: "",
-        priority: 2,
-        recurrence: "none",
-        location: "",
-        travelMinutes: 0,
-        movable: kind !== "fixed",
-        splittable: false,
-        locked: kind === "fixed",
-        scheduledStart: null,
-        state: "pending",
-        linkedShiftId: forPreparation ? next?.id : undefined,
-        omittedFields: [
-          "deadline",
-          "windowStart",
-          "windowEnd",
-          "travelMinutes",
-        ],
-      }),
-    );
+    preparationContext.current = forPreparation;
+    chosenDraftDate.current = null;
+    const task: Task = {
+      id: uid("task"),
+      title,
+      kind,
+      minutes: 30,
+      deadline: "",
+      earliest:
+        forPreparation && next
+          ? ""
+          : localAt(systemClock.now(), s.timezone).slice(0, 16),
+      windowStart: "",
+      windowEnd: "",
+      priority: 2,
+      recurrence: "none",
+      location: "",
+      travelMinutes: 0,
+      movable: kind !== "fixed",
+      splittable: false,
+      locked: kind === "fixed",
+      scheduledStart: null,
+      state: "pending",
+      linkedShiftId: forPreparation ? next?.id : undefined,
+      omittedFields: ["deadline", "windowStart", "windowEnd", "travelMinutes"],
+    };
+    baselineDraft.current = task;
+    setEdit(suggest(task));
   }
   function put(patch: Partial<Task>, explicitTimeSelection = false) {
     if (!edit) return;
@@ -145,18 +185,21 @@ export function Plan({ state, change, notify }: ScreenProps) {
   }
   function beginEditing(task: Task) {
     editingSavedTask.current = true;
+    preparationContext.current = !!task.linkedShiftId;
+    chosenDraftDate.current = null;
     editedFields.current = new Set();
     setSuggestionNotice("");
     setSuggestionConflict("");
     const placement = slots.find((p) => p.taskId === task.id);
-    setEdit(
-      taskForEditing(
-        task,
-        placement?.start !== null && placement?.start !== undefined
-          ? localAt(placement.start, s.timezone).slice(0, 16)
-          : undefined,
-      ),
+    const draft = taskForEditing(
+      task,
+      placement?.start !== null && placement?.start !== undefined
+        ? localAt(placement.start, s.timezone).slice(0, 16)
+        : undefined,
     );
+    baselineDraft.current = draft;
+    setDraftDate(taskDraftTiming(draft).date);
+    setEdit(draft);
   }
   const action = (t: Task, patch: Partial<Task>, placement?: TaskPlacement) =>
     change((a) => ({
@@ -336,28 +379,114 @@ export function Plan({ state, change, notify }: ScreenProps) {
               hint="Reserved before the task; include any extra occupied travel in its total duration."
             />
           </Row>
-          <Body muted>Times use {s.timezone}.</Body>
-          <DateTimePickerField
-            label={
-              editingSavedTask.current && (edit.locked || edit.kind === "fixed")
-                ? "Earliest permitted date and time"
-                : "Start date and time"
-            }
-            value={edit.earliest}
-            onChange={(v) =>
-              put(
-                {
-                  earliest: v,
-                  ...(!editingSavedTask.current ||
-                  (!edit.locked && edit.kind !== "fixed")
-                    ? { scheduledStart: v }
-                    : {}),
-                },
-                true,
-              )
-            }
-            settings={s}
-          />
+          <Body muted>
+            {!editingSavedTask.current &&
+            (edit.linkedShiftId || (preparationContext.current && next))
+              ? `Preparation date and start time use ${preparationTimezone}.`
+              : `Times use ${s.timezone}.`}
+          </Body>
+          {!editingSavedTask.current &&
+          (edit.linkedShiftId || (preparationContext.current && next)) ? (
+            <Row>
+              <DatePickerField
+                label="Preparation date"
+                value={draftDate}
+                settings={{ ...s, timezone: preparationTimezone }}
+                onChange={(value) => {
+                  const time = taskDraftTiming(
+                    edit,
+                    draftDate,
+                    s.timezone,
+                    preparationTimezone,
+                  ).time;
+                  if (time) {
+                    try {
+                      const start = taskDraftStartValue(
+                        value,
+                        time,
+                        preparationTimezone,
+                        s.timezone,
+                      );
+                      chosenDraftDate.current = value;
+                      put({ earliest: start, scheduledStart: start }, true);
+                    } catch (error) {
+                      notify((error as Error).message);
+                    }
+                  } else {
+                    chosenDraftDate.current = value;
+                    setDraftDate(value);
+                    setEdit(taskTimeProvenance(edit, true));
+                  }
+                }}
+              />
+              <TimePickerField
+                label="Start time"
+                value={
+                  taskDraftTiming(
+                    edit,
+                    draftDate,
+                    s.timezone,
+                    preparationTimezone,
+                  ).time
+                }
+                clockFormat={s.clockFormat}
+                allowClear
+                onChange={(value) => {
+                  if (!draftDate) {
+                    notify(
+                      "Choose the preparation date before its start time.",
+                    );
+                    return;
+                  }
+                  try {
+                    const start = value
+                      ? taskDraftStartValue(
+                          draftDate,
+                          value,
+                          preparationTimezone,
+                          s.timezone,
+                        )
+                      : "";
+                    chosenDraftDate.current = draftDate;
+                    put(
+                      { earliest: start, scheduledStart: start || null },
+                      true,
+                    );
+                  } catch (error) {
+                    notify((error as Error).message);
+                  }
+                }}
+              />
+            </Row>
+          ) : (
+            <DateTimePickerField
+              label={
+                editingSavedTask.current &&
+                (edit.locked || edit.kind === "fixed")
+                  ? "Earliest permitted date and time"
+                  : "Start date and time"
+              }
+              value={edit.earliest}
+              onChange={(v) =>
+                put(
+                  {
+                    earliest: v,
+                    ...(!editingSavedTask.current ||
+                    (!edit.locked && edit.kind !== "fixed")
+                      ? { scheduledStart: v }
+                      : {}),
+                  },
+                  true,
+                )
+              }
+              settings={s}
+            />
+          )}
+          {!editingSavedTask.current &&
+            (edit.linkedShiftId || (preparationContext.current && next)) &&
+            preparationTimezone !== s.timezone && (
+              <Body muted>Deadline and preferred window use {s.timezone}.</Body>
+            )}
           <DateTimePickerField
             label="Deadline (optional)"
             value={edit.deadline}

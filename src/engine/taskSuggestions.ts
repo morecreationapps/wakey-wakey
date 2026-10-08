@@ -1,6 +1,7 @@
 import { Clock, RotaEntry, Settings, Task } from "../model";
 import {
   planPreparation,
+  preparationCalculationContext,
   PreparationActivity,
   recognizePreparationActivity,
 } from "./preparation";
@@ -16,7 +17,10 @@ import {
 export { recognizePreparationActivity } from "./preparation";
 
 export interface PreparationTaskSuggestion {
+  kind: Task["kind"];
   minutes: number;
+  /** Known even when personal inputs cannot yet establish a clock time. */
+  preparationDate: string;
   earliest: string;
   scheduledStart: string | null;
   deadline: string;
@@ -118,6 +122,26 @@ function suggest(
   const date = current.preparationDate,
     dayStart = onDate(date, "00:00", next.timezone),
     dayEnd = onDate(addDays(date, 1), "00:00", next.timezone);
+  const calculation = preparationCalculationContext(
+    entries,
+    settings,
+    date,
+    next,
+  );
+  const kind: Task["kind"] =
+    activity &&
+    [
+      "ironing",
+      "lunch",
+      "packing",
+      "clothes",
+      "meal",
+      "shower",
+      "windDown",
+      "sleep",
+    ].includes(activity)
+      ? "essential"
+      : "flexible";
   const suggestionClock = {
     now: () =>
       clock.now() < dayEnd ? Math.max(dayStart, clock.now()) : dayStart,
@@ -189,7 +213,7 @@ function suggest(
   const candidate: Task = {
     id,
     title,
-    kind: "essential",
+    kind,
     minutes,
     earliest,
     deadline: overrides.deadline || neutralDeadline,
@@ -261,8 +285,8 @@ function suggest(
         ),
         request,
       ],
-      entries,
-      settings,
+      calculation.entries,
+      calculation.settings,
       suggestionClock,
       2,
     );
@@ -279,8 +303,8 @@ function suggest(
           ),
           request,
         ],
-        entries,
-        settings,
+        calculation.entries,
+        calculation.settings,
         suggestionClock,
         2,
       );
@@ -360,10 +384,42 @@ function suggest(
   let conflict =
     row?.conflict ?? (placement?.start === null ? placement.reason : undefined);
   if (placement?.start === null && explicit === undefined) start = null;
-  if (start === null)
-    conflict =
+  if (start === null) {
+    const missing: string[] = [];
+    if (event("wake") === undefined) {
+      missing.push(
+        next.category === "Late"
+          ? "Enter your usual Late-shift wake time in Settings → Sleep to calculate this suggested start."
+          : next.category === "Early"
+            ? "Enter your early-shift wake time or complete travel and essential preparation settings to calculate this suggested start."
+            : "Review the specialist night-shift sleep and wake settings before choosing this start.",
+      );
+    }
+    if (
+      !settings.restWake &&
+      !entries.some((e) => e.date === date && e.status === "Work")
+    )
+      missing.push(
+        "Enter your Rest-day wake time in Settings → Sleep so the preparation day's previous full sleep can be protected.",
+      );
+    if (settings.sleepTarget === null || settings.sleepTarget <= 0)
+      missing.push(
+        "Enter your full sleep target in Settings to calculate bedtime.",
+      );
+    if (settings.latency === null)
+      missing.push(
+        "Enter your estimated sleep latency in Settings to calculate bedtime.",
+      );
+    if (settings.windDown === null)
+      missing.push(
+        "Enter your wind-down duration in Settings to calculate the bedtime routine.",
+      );
+    conflict = [
+      ...missing,
       conflict ??
-      "Review the sleep, wake and preparation settings before choosing this task's start time.";
+        "Review the sleep, wake and preparation settings before choosing this task's start time.",
+    ].join(" ");
+  }
   if (minutes <= 0 || !Number.isFinite(minutes))
     conflict =
       "Enter a positive duration before calculating a suitable start time.";
@@ -379,9 +435,11 @@ function suggest(
     ]
       .filter(Boolean)
       .join(" ");
-  const explanation = `Suggested editable ${minutes}-minute activity for ${displayDate(date, settings.dateFormat)}, the calendar day before ${next.duty || "your selected shift"}. ${activity === "shower" ? "It fits before the entered wind-down routine, calculated backwards from bedtime." : activity === "sleep" ? "This time starts the bedtime routine; full planned sleep remains protected in Shift Plan." : activity === "windDown" ? "Its duration is calculated backwards from planned bedtime using your sleep and wake settings." : "Work, travel, planned sleep, task dependencies and saved commitments remain protected."}`;
+  const explanation = `Suggested editable ${minutes}-minute activity for ${displayDate(date, settings.dateFormat)}, the calendar day before ${next.duty || "your selected shift"}. ${start === null ? "The date and duration are known; a start time needs the missing inputs or a permitted free slot shown below." : activity === "shower" ? "The proposed slot is calculated before wind-down, working backwards from bedtime; review any flagged conflicts." : activity === "sleep" ? "This time starts the bedtime routine; full planned sleep remains protected in Shift Plan." : activity === "windDown" ? "Its duration is calculated backwards from planned bedtime using your sleep and wake settings." : "Recorded work, travel, calculated sleep, task dependencies and saved commitments remain protected; review any provisional inputs."}`;
   return {
+    kind,
     minutes,
+    preparationDate: date,
     earliest:
       overrides.earliest !== undefined
         ? overrides.earliest

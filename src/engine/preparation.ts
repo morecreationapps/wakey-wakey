@@ -45,22 +45,40 @@ export type PreparationActivity =
 export function recognizePreparationActivity(
   title: string,
 ): PreparationActivity | undefined {
+  const combined = title.split(/\s*(?:\band\b|\bthen\b|[&+,;])\s*/i);
+  if (
+    combined.length > 1 &&
+    combined.some((part) => recognizePreparationActivity(part) !== undefined)
+  )
+    return undefined;
   const text = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
   if (
-    /\b(?:shower|showering) (?:for|before) (?:bed|sleep)\b|^bedtime shower$/.test(
+    /\b(?:shower|showering) (?:for|before) (?:bed|bedtime|sleep)\b|^bedtime shower$|^(?:take |have |having |taking )?(?:a )?shower$/.test(
       text,
     )
   )
     return "shower";
   if (/\bwind(?:ing)? down\b|^winddown$/.test(text)) return "windDown";
-  if (/^(?:go|going) to (?:sleep|bed)$|^bedtime$|^get to sleep$/.test(text))
+  if (
+    /^(?:go|going) to (?:sleep|bed)$|^bedtime$|^get to sleep$|^sleep$/.test(
+      text,
+    )
+  )
     return "sleep";
-  if (/\blast (?:meal|dinner)\b|\b(?:evening meal|dinner)\b/.test(text))
+  if (
+    /\blast (?:meal|dinner)\b|\b(?:evening meal|dinner)\b|\bmeal before (?:bed|bedtime|sleep)\b/.test(
+      text,
+    )
+  )
     return "meal";
-  if (/\bhaircut\b|\bcut (?:my |your |their )?hair\b/.test(text))
+  if (
+    /\b(?:haircut|hair cut|hair trim)\b|\bcut (?:my |your |their )?hair\b/.test(
+      text,
+    )
+  )
     return "haircut";
   if (/\blay(?:ing)? out (?:work )?clothes\b/.test(text)) return "clothes";
   if (/\b(?:grocery shopping|food shopping)\b/.test(text)) return "shopping";
@@ -96,6 +114,94 @@ export interface PreparationPlan {
   missing: string[];
   conflicts: string[];
   provisional: boolean;
+}
+
+/** Provisional task calculations use existing values, never overwrite settings
+ * or assert that an unknown rota day is actually a rest day. */
+export function preparationCalculationContext(
+  entries: RotaEntry[],
+  settings: Settings,
+  date: string,
+  shift: RotaEntry,
+) {
+  const warnings: string[] = [],
+    origins = { ...settings.origins };
+  const suggested: string[] = [];
+  for (const [key, origin] of Object.entries(origins)) {
+    const raw = (settings as unknown as Record<string, unknown>)[key];
+    const duration =
+      typeof raw === "number"
+        ? raw
+        : settings.routines.find((r) => r.id === key)?.minutes;
+    if (
+      origin === "suggested" &&
+      typeof duration === "number" &&
+      Number.isFinite(duration) &&
+      duration >= 0
+    ) {
+      origins[key] = "entered";
+      suggested.push(key);
+    }
+  }
+  if (suggested.length)
+    warnings.push(
+      "This editable suggestion uses your existing starting values; confirm the relevant sleep, preparation and travel settings before relying on it.",
+    );
+  const calculated: Settings = { ...settings, origins };
+  if (!settings.timezoneConfirmed && settings.timezone === shift.timezone) {
+    calculated.timezoneConfirmed = true;
+    warnings.push(
+      `The suggestion uses the recorded ${shift.timezone} timezone; confirm your timezone setting before relying on it.`,
+    );
+  }
+  if (
+    !settings.restBed &&
+    settings.restWake &&
+    settings.sleepTarget !== null &&
+    settings.sleepTarget > 0 &&
+    settings.latency !== null &&
+    settings.latency >= 0
+  ) {
+    try {
+      calculated.restBed = localAt(
+        onDate(date, settings.restWake, settings.timezone) -
+          (settings.sleepTarget + settings.latency) * MINUTE,
+        settings.timezone,
+      ).slice(11, 16);
+      warnings.push(
+        "Previous-night sleep is protected by working backwards from your entered preparation-day wake time and full sleep target; your usual rest-day bedtime is still unconfirmed.",
+      );
+    } catch {
+      /* Invalid wake preferences stay unavailable. */
+    }
+  }
+  const dayEntries = entries.filter((e) => e.date === date);
+  let planningEntries = entries;
+  if (!dayEntries.length || dayEntries.some((e) => e.status === "Unknown")) {
+    warnings.push(
+      "Availability on the preparation day is unconfirmed. This is an editable suggestion around recorded work and commitments; review the rota before relying on it.",
+    );
+    planningEntries = entries.map((e) =>
+      e.date === date && e.status === "Unknown"
+        ? { ...e, status: "Rest" as const }
+        : e,
+    );
+    if (!dayEntries.length)
+      planningEntries = [
+        ...planningEntries,
+        {
+          ...shift,
+          id: `__provisional_preparation_${date}`,
+          date,
+          status: "Rest",
+          start: null,
+          end: null,
+          duty: "",
+          notes: "",
+        },
+      ];
+  }
+  return { settings: calculated, entries: planningEntries, warnings };
 }
 
 /** A recurring checklist action must never complete its entire saved series. */
@@ -284,6 +390,12 @@ export function planPreparation(
     dayEnd = onDate(nextDate, "00:00", next.timezone);
   // Keep a historical day-before view when today's duty is the selected duty.
   const schedulerClock: Clock = { now: () => Math.min(now, dayStart) };
+  const calculation = preparationCalculationContext(
+    entries,
+    settings,
+    preparationDate,
+    next,
+  );
   const horizon = Math.max(
     14,
     calendarDaysBetween(
@@ -346,6 +458,7 @@ export function planPreparation(
           `The selected shift uses ${next.timezone}, while task times and routine preferences use ${settings.timezone}. Review these timezones before relying on the preparation schedule; its previous calendar day is anchored in the selected shift's timezone.`,
         ]
       : [];
+  availabilityIssues.push(...calculation.warnings);
   const block = (start: number, end: number, label: string) => {
     if (end > start) blocked.push({ start, end, label });
   };
@@ -678,7 +791,16 @@ export function planPreparation(
       task.travelMinutes < 0
     )
       start = null;
-    if (bedtime === undefined || windStart === undefined) start = null;
+    if (bedtime === undefined || windStart === undefined) {
+      if (
+        start !== null &&
+        (fixedTask(task) || task.preparationAutoStart === false)
+      )
+        conflicts.push(
+          "Your entered start is retained. The usual shift-day wake time and calculated bedtime are still needed to review this bedtime routine; no sleep opportunity has been shortened.",
+        );
+      else start = null;
+    }
     if (start === null) {
       const reason =
         bedtime !== undefined &&
@@ -722,7 +844,7 @@ export function planPreparation(
       conflicts.push(
         "This planned start has passed; mark the activity complete or review its time before relying on it.",
       );
-    if (kind === "sleep" && start !== bedtime)
+    if (kind === "sleep" && bedtime !== undefined && start !== bedtime)
       conflicts.push(
         "This saved bedtime differs from the calculated bedtime; the existing Shift Plan sleep opportunity is unchanged.",
       );
@@ -825,8 +947,8 @@ export function planPreparation(
     normalCandidates.filter(
       (t) => !automaticMeals.some((m) => m.task.id === t.id),
     ),
-    entries,
-    settings,
+    calculation.entries,
+    calculation.settings,
     schedulerClock,
     horizon,
   );
@@ -900,8 +1022,8 @@ export function planPreparation(
             ),
             trial,
           ],
-          entries,
-          settings,
+          calculation.entries,
+          calculation.settings,
           schedulerClock,
           horizon,
         ).find((p) => p.taskId === task.id) ?? {
