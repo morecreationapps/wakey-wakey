@@ -137,22 +137,55 @@ function fakeReminders(existing: ScheduledReminder[] = []) {
 }
 
 describe("rolling local reminder intentions and reconciliation", () => {
-  it("uses long display dates without changing reminder IDs or scheduled times", () => {
+  it.each([
+    ["LONG", "Tue 10th August 2032"],
+    ["LONG_ISO", "Tue 2032 August 10"],
+  ] as const)(
+    "uses %s dates without changing reminder IDs or scheduled times",
+    (dateFormat, expectedDate) => {
+      const original = state();
+      const before = desiredReminders(original, clock);
+      const after = desiredReminders(
+        { ...original, settings: { ...original.settings, dateFormat } },
+        clock,
+      );
+      expect(after.map(({ id, at }) => ({ id, at }))).toEqual(
+        before.map(({ id, at }) => ({ id, at })),
+      );
+      expect(
+        after.find((reminder) => reminder.entryId === "first")?.body,
+      ).toContain(expectedDate);
+      expect(
+        before.find((reminder) => reminder.entryId === "first")?.body,
+      ).toContain("2032-08-10");
+    },
+  );
+
+  it("uses Written ISO for a transition reminder without changing its scheduling or identity", () => {
     const original = state();
+    original.entries = [
+      duty("first", "2032-08-10", "Late"),
+      duty("second", "2032-08-13", "Early"),
+    ];
     const before = desiredReminders(original, clock);
     const after = desiredReminders(
-      { ...original, settings: { ...original.settings, dateFormat: "LONG" } },
+      {
+        ...original,
+        settings: { ...original.settings, dateFormat: "LONG_ISO" },
+      },
       clock,
     );
-    expect(after.map(({ id, at }) => ({ id, at }))).toEqual(
-      before.map(({ id, at }) => ({ id, at })),
+    const originalTransition = before.find(
+      (reminder) => reminder.kind === "transition",
     );
-    expect(
-      after.find((reminder) => reminder.entryId === "first")?.body,
-    ).toContain("Tue 10th August 2032");
-    expect(
-      before.find((reminder) => reminder.entryId === "first")?.body,
-    ).toContain("2032-08-10");
+    const writtenTransition = after.find(
+      (reminder) => reminder.kind === "transition",
+    );
+    expect(originalTransition).toBeDefined();
+    expect(writtenTransition?.id).toBe(originalTransition?.id);
+    expect(writtenTransition?.at).toBe(originalTransition?.at);
+    expect(writtenTransition?.body).toContain("Fri 2032 August 13");
+    expect(originalTransition?.body).toContain("2032-08-13");
   });
 
   it("G: confirmed leave removes that duty reminders and makes the following actual workday next", async () => {

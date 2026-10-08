@@ -13,6 +13,7 @@ import {
   addDays,
   displayDate,
   displayLocalDateTime,
+  isWrittenDateFormat,
   displayTime,
   localAt,
   zonedEpoch,
@@ -288,11 +289,11 @@ export function TransitionCard({
         <View key={x.date}>
           <Body>
             {displayDate(x.date, s.dateFormat)} · Bed{" "}
-            {s.dateFormat === "LONG"
+            {isWrittenDateFormat(s.dateFormat)
               ? displayLocalDateTime(x.bedtime, s.dateFormat)
               : x.bedtime}{" "}
             · Wake{" "}
-            {s.dateFormat === "LONG"
+            {isWrittenDateFormat(s.dateFormat)
               ? displayLocalDateTime(x.wake, s.dateFormat)
               : x.wake}
           </Body>
@@ -350,10 +351,12 @@ export function Today({
         <View style={{ gap: 8 }}>
           <Label
             style={
-              s.dateFormat === "LONG" ? { textTransform: "none" } : undefined
+              isWrittenDateFormat(s.dateFormat)
+                ? { textTransform: "none" }
+                : undefined
             }
           >
-            {s.dateFormat === "LONG"
+            {isWrittenDateFormat(s.dateFormat)
               ? displayDate(today, s.dateFormat)
               : new Intl.DateTimeFormat("en-GB", {
                   weekday: "long",

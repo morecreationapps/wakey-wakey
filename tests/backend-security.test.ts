@@ -19,8 +19,10 @@ type ValidatorDefinition = {
 };
 let previousValidator: ValidatorDefinition;
 let expandedValidator: ValidatorDefinition;
-let preferenceMigration: string;
+let writtenISOValidator: ValidatorDefinition;
+let latestPreferenceMigration: string;
 let previousExpandedChoiceError: string | undefined;
+let previousWrittenISOChoiceError: string | undefined;
 const snapshot = (name: string) => {
   const state = initialState();
   state.settings.name = name;
@@ -190,6 +192,17 @@ describe("executed PostgreSQL account security", () => {
       .sort();
     for (const file of files) {
       const sql = await readFile(new URL(file, directory), "utf8");
+      if (file === "20261008132658_written_iso_date_format.sql") {
+        const expanded = JSON.parse(payload);
+        expanded.settings.dateFormat = "LONG_ISO";
+        try {
+          await db.query("select private.validate_snapshot($1)", [
+            JSON.stringify(expanded),
+          ]);
+        } catch (error) {
+          previousWrittenISOChoiceError = (error as { code?: string }).code;
+        }
+      }
       await db.exec(sql);
       if (file === "20261007190548_account_security.sql") {
         previousValidator = await validatorDefinition();
@@ -205,8 +218,11 @@ describe("executed PostgreSQL account security", () => {
         }
       }
       if (file === "20261008110643_date_week_preferences.sql") {
-        preferenceMigration = sql;
         expandedValidator = await validatorDefinition();
+      }
+      if (file === "20261008132658_written_iso_date_format.sql") {
+        latestPreferenceMigration = sql;
+        writtenISOValidator = await validatorDefinition();
       }
     }
     for (const [id, email] of [
@@ -260,8 +276,18 @@ describe("executed PostgreSQL account security", () => {
         ),
     );
   });
+  it("adds only written ISO dates and preserves the complete validator metadata", () => {
+    expect(previousWrittenISOChoiceError).toBe("22023");
+    expect(writtenISOValidator.metadata).toEqual(expandedValidator.metadata);
+    expect(writtenISOValidator.source).toBe(
+      expandedValidator.source.replace(
+        "perform private.check_choice(settings->'dateFormat','settings.dateFormat',array['UK','ISO','LONG']);",
+        "perform private.check_choice(settings->'dateFormat','settings.dateFormat',array['UK','ISO','LONG','LONG_ISO']);",
+      ),
+    );
+  });
   it.each(
-    ["UK", "ISO", "LONG"].flatMap((format) =>
+    ["UK", "ISO", "LONG", "LONG_ISO"].flatMap((format) =>
       ["Monday", "Sunday", "Saturday"].map((firstDay) => [format, firstDay]),
     ),
   )(
@@ -284,6 +310,8 @@ describe("executed PostgreSQL account security", () => {
   it.each([
     ["dateFormat", "US"],
     ["dateFormat", "long"],
+    ["dateFormat", "long_iso"],
+    ["dateFormat", "LONG-ISO"],
     ["dateFormat", ""],
     ["firstDay", "Tuesday"],
     ["firstDay", "saturday"],
@@ -299,10 +327,10 @@ describe("executed PostgreSQL account security", () => {
       expect(await rpc("planner_load")).toEqual({ payload: null, revision: 0 });
     },
   );
-  it("reapplying the preference migration leaves the complete validator unchanged", async () => {
+  it("reapplying the latest preference migration leaves the complete validator unchanged", async () => {
     await owner();
-    await db.exec(preferenceMigration);
-    expect(await validatorDefinition()).toEqual(expandedValidator);
+    await db.exec(latestPreferenceMigration);
+    expect(await validatorDefinition()).toEqual(writtenISOValidator);
   });
   it("refuses to replace an unexpectedly changed validator", async () => {
     await owner();
@@ -319,13 +347,13 @@ describe("executed PostgreSQL account security", () => {
           "\nbegin\n  -- Unexpected operator edit.\n",
         ),
       );
-      await expect(db.exec(preferenceMigration)).rejects.toThrow(
+      await expect(db.exec(latestPreferenceMigration)).rejects.toThrow(
         /Unexpected snapshot validator source/,
       );
     } finally {
       await db.exec("rollback");
     }
-    expect(await validatorDefinition()).toEqual(expandedValidator);
+    expect(await validatorDefinition()).toEqual(writtenISOValidator);
   });
   it("isolates two accounts in RPCs and direct owner RLS reads", async () => {
     await rpc("planner_save", [snapshot("Alice"), 0]);

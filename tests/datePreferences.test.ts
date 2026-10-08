@@ -36,6 +36,12 @@ describe("date display preferences", () => {
     expect(displayLocalDateTime("2026-10-11T00:26:30", "LONG")).toBe(
       "Sun 11th October 2026 00:26:30",
     );
+    expect(displayLocalDateTime("2026-10-10T14:08", "LONG_ISO")).toBe(
+      "Sat 2026 October 10 14:08",
+    );
+    expect(displayLocalDateTime("2026-10-11T00:26:30", "LONG_ISO")).toBe(
+      "Sun 2026 October 11 00:26:30",
+    );
     for (const format of ["UK", "ISO"] as const)
       expect(displayLocalDateTime("2026-10-10T14:08", format)).toBe(
         "2026-10-10 14:08",
@@ -44,6 +50,43 @@ describe("date display preferences", () => {
 
   it("renders the requested long date exactly", () => {
     expect(displayDate("2026-10-10", "LONG")).toBe("Sat 10th October 2026");
+  });
+
+  it("renders Written ISO in the owner's chosen weekday-first order without an ordinal", () => {
+    expect(displayDate("2026-10-10", "LONG_ISO")).toBe("Sat 2026 October 10");
+    expect(displayDate("2026-10-11", "LONG_ISO")).toBe("Sun 2026 October 11");
+    expect(displayDate("2026-10-12", "LONG_ISO")).toBe("Mon 2026 October 12");
+    expect(displayDate("2026-10-13", "LONG_ISO")).toBe("Tue 2026 October 13");
+    expect(displayDate("2026-10-21", "LONG_ISO")).toBe("Wed 2026 October 21");
+  });
+
+  it.each([
+    ["2026-10-05", "Mon 2026 October 5"],
+    ["2026-10-06", "Tue 2026 October 6"],
+    ["2026-10-07", "Wed 2026 October 7"],
+    ["2026-10-08", "Thu 2026 October 8"],
+    ["2026-10-09", "Fri 2026 October 9"],
+    ["2026-10-10", "Sat 2026 October 10"],
+    ["2026-10-11", "Sun 2026 October 11"],
+  ])("uses the English weekday in Written ISO for %s", (date, expected) => {
+    expect(displayDate(date, "LONG_ISO")).toBe(expected);
+  });
+
+  it.each([
+    ["2026-01-01", "Thu 2026 January 1"],
+    ["2026-02-01", "Sun 2026 February 1"],
+    ["2026-03-01", "Sun 2026 March 1"],
+    ["2026-04-01", "Wed 2026 April 1"],
+    ["2026-05-01", "Fri 2026 May 1"],
+    ["2026-06-01", "Mon 2026 June 1"],
+    ["2026-07-01", "Wed 2026 July 1"],
+    ["2026-08-01", "Sat 2026 August 1"],
+    ["2026-09-01", "Tue 2026 September 1"],
+    ["2026-10-01", "Thu 2026 October 1"],
+    ["2026-11-01", "Sun 2026 November 1"],
+    ["2026-12-01", "Tue 2026 December 1"],
+  ])("uses the full month in Written ISO for %s", (date, expected) => {
+    expect(displayDate(date, "LONG_ISO")).toBe(expected);
   });
 
   it.each([
@@ -105,8 +148,11 @@ describe("date display preferences", () => {
 
   it("retains real-date validation and handles leap dates", () => {
     expect(displayDate("2024-02-29", "LONG")).toBe("Thu 29th February 2024");
-    expect(() => displayDate("2026-02-29", "LONG")).toThrow();
-    expect(() => displayDate("2026-04-31", "LONG")).toThrow();
+    expect(displayDate("2024-02-29", "LONG_ISO")).toBe("Thu 2024 February 29");
+    for (const format of ["LONG", "LONG_ISO"] as const) {
+      expect(() => displayDate("2026-02-29", format)).toThrow();
+      expect(() => displayDate("2026-04-31", format)).toThrow();
+    }
   });
 });
 
@@ -117,7 +163,7 @@ describe("saved date and week preferences", () => {
     expect(state.settings.firstDay).toBe("Monday");
   });
 
-  const formats: Settings["dateFormat"][] = ["UK", "ISO", "LONG"];
+  const formats: Settings["dateFormat"][] = ["UK", "ISO", "LONG", "LONG_ISO"];
   const weekStarts: Settings["firstDay"][] = ["Monday", "Sunday", "Saturday"];
   it.each(
     formats.flatMap((format) =>
@@ -160,23 +206,30 @@ describe("saved date and week preferences", () => {
 describe("display preference does not change input or export date semantics", () => {
   const csv = "date,status\n2026-10-10,Rest";
 
-  it("accepts ISO CSV with LONG selected and stores an ISO date", () => {
-    const preview = previewImport(csv, "Europe/London", [], "LONG");
-    expect(preview.errors).toEqual([]);
-    expect(preview.rows[0].errors).toEqual([]);
-    expect(importAccepted(preview, [])[0].date).toBe("2026-10-10");
-  });
+  it.each(["LONG", "LONG_ISO"] as const)(
+    "accepts ISO CSV with %s selected and stores an ISO date",
+    (format) => {
+      const preview = previewImport(csv, "Europe/London", [], format);
+      expect(preview.errors).toEqual([]);
+      expect(preview.rows[0].errors).toEqual([]);
+      expect(importAccepted(preview, [])[0].date).toBe("2026-10-10");
+    },
+  );
 
-  it("keeps CSV exports in ISO form when LONG is selected", () => {
-    const state = savedPlanner();
-    state.settings.dateFormat = "LONG";
-    const exported = exportCSV(state.entries);
-    expect(exported.split("\r\n")[1].startsWith("2026-10-10,")).toBe(true);
-    expect(exported).not.toContain("Sat 10th October 2026");
-    expect(state.entries[0].date).toBe("2026-10-10");
-  });
+  it.each(["LONG", "LONG_ISO"] as const)(
+    "keeps CSV exports in ISO form when %s is selected",
+    (format) => {
+      const state = savedPlanner();
+      state.settings.dateFormat = format;
+      const exported = exportCSV(state.entries);
+      expect(exported.split("\r\n")[1].startsWith("2026-10-10,")).toBe(true);
+      expect(exported).not.toContain("Sat 10th October 2026");
+      expect(exported).not.toContain("Sat 2026 October 10");
+      expect(state.entries[0].date).toBe("2026-10-10");
+    },
+  );
 
-  it.each([undefined, "ISO", "LONG"] as const)(
+  it.each([undefined, "ISO", "LONG", "LONG_ISO"] as const)(
     "still requires explicit UK selection for ambiguous slash CSV with %s",
     (format) => {
       const preview = previewImport(
@@ -201,25 +254,34 @@ describe("display preference does not change input or export date semantics", ()
     expect(preview.rows[0].entry?.date).toBe("2026-11-10");
   });
 
-  it("does not accept a displayed long date as an input date", () => {
-    const preview = previewImport(
-      csv.replace("2026-10-10", "Sat 10th October 2026"),
-      "Europe/London",
-      [],
-      "LONG",
-    );
-    expect(preview.rows[0].errors.join(" ")).toMatch(/Use YYYY-MM-DD/);
-    expect(importAccepted(preview, [])).toEqual([]);
-  });
+  it.each([
+    ["LONG", "Sat 10th October 2026"],
+    ["LONG_ISO", "Sat 2026 October 10"],
+  ] as const)(
+    "does not accept a displayed %s date as an input date",
+    (format, shown) => {
+      const preview = previewImport(
+        csv.replace("2026-10-10", shown),
+        "Europe/London",
+        [],
+        format,
+      );
+      expect(preview.rows[0].errors.join(" ")).toMatch(/Use YYYY-MM-DD/);
+      expect(importAccepted(preview, [])).toEqual([]);
+    },
+  );
 
-  it("preserves the explicit UK pasted-text grammar with LONG selected", () => {
-    const preview = previewImport(
-      "10/11/2026: REST",
-      "Europe/London",
-      [],
-      "LONG",
-    );
-    expect(preview.rows[0].errors).toEqual([]);
-    expect(preview.rows[0].entry?.date).toBe("2026-11-10");
-  });
+  it.each(["LONG", "LONG_ISO"] as const)(
+    "preserves the explicit UK pasted-text grammar with %s selected",
+    (format) => {
+      const preview = previewImport(
+        "10/11/2026: REST",
+        "Europe/London",
+        [],
+        format,
+      );
+      expect(preview.rows[0].errors).toEqual([]);
+      expect(preview.rows[0].entry?.date).toBe("2026-11-10");
+    },
+  );
 });

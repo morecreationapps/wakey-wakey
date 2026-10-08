@@ -147,10 +147,15 @@ export function SettingsFields({
         />
         <Body muted>Date format</Body>
         <Choices
-          values={["UK", "ISO", "LONG"]}
+          values={["UK", "ISO", "LONG", "LONG_ISO"]}
           value={s.dateFormat}
           onChange={(v) => put("dateFormat", v)}
-          labels={{ LONG: "Weekday, day, month & year" }}
+          labels={{
+            UK: { primary: "Numeric", secondary: "UK" },
+            ISO: { primary: "Numeric", secondary: "ISO" },
+            LONG: { primary: "Written", secondary: "UK" },
+            LONG_ISO: { primary: "Written", secondary: "ISO" },
+          }}
         />
         <Body muted>Clock</Body>
         <Choices

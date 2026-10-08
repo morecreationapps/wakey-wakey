@@ -43,6 +43,8 @@ import { Today, Sleep } from "./src/ui/TodaySleep";
 import { Rota } from "./src/ui/Rota";
 import { Plan } from "./src/ui/Plan";
 import { SettingsScreen } from "./src/ui/Settings";
+import { createHeaderFeedback } from "./src/ui/editFeedback";
+import { HeaderFeedback } from "./src/ui/HeaderFeedback";
 const tabs = [
   { name: "Today", icon: "sun" },
   { name: "Rota", icon: "calendar" },
@@ -141,11 +143,16 @@ function Planner({
   const [state, setState] = useState<AppState | null>(null),
     [tab, setTab] = useState("Today"),
     [message, setMessage] = useState(""),
-    [saveStatus, setSaveStatus] = useState("Loading account data…"),
     [loadError, setLoadError] = useState(""),
     [, tick] = useState(0);
-  const history = useRef<AppState[]>([]),
-    messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
+  const feedback = useMemo(
+    () =>
+      createHeaderFeedback<AppState>({
+        initialStatus: "Loading account data…",
+      }),
+    [],
+  );
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     scroll = useRef<ScrollView>(null),
     stateRef = useRef<AppState | null>(null),
     saveRevision = useRef(0),
@@ -164,19 +171,21 @@ function Planner({
     if (messageTimer.current) clearTimeout(messageTimer.current);
     messageTimer.current = setTimeout(() => setMessage(""), 8500);
   };
+  const deactivate = () => {
+    active.current = false;
+    ++saveRevision.current;
+    stateRef.current = null;
+    durableState.current = null;
+    feedback.deactivate();
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    clearNotificationOwner(identity.id);
+  };
+  const leaveAccount = async () => {
+    deactivate();
+    await logout();
+  };
   const accessDenied = (error: unknown) =>
-    handleAccountAccessDenied(error, {
-      deactivate: () => {
-        active.current = false;
-        ++saveRevision.current;
-        stateRef.current = null;
-        durableState.current = null;
-        history.current = [];
-        if (messageTimer.current) clearTimeout(messageTimer.current);
-        clearNotificationOwner(identity.id);
-      },
-      logout,
-    });
+    handleAccountAccessDenied(error, { deactivate, logout });
   const accountOperation = async <T,>(
     operation: () => Promise<T>,
   ): Promise<T> => {
@@ -192,6 +201,7 @@ function Planner({
       .loadState()
       .then((a) => {
         if (!active.current) return;
+        stateRef.current = a;
         setState(a);
         setLoadError("");
       })
@@ -203,35 +213,29 @@ function Planner({
       });
   useEffect(() => {
     active.current = true;
+    feedback.activate();
     load();
     const interval = setInterval(() => tick((x) => x + 1), 60000);
     return () => {
-      active.current = false;
-      ++saveRevision.current;
-      stateRef.current = null;
-      durableState.current = null;
-      history.current = [];
+      deactivate();
       clearInterval(interval);
-      if (messageTimer.current) clearTimeout(messageTimer.current);
     };
   }, []);
   useEffect(() => {
     scroll.current?.scrollTo({ y: 0, animated: false });
   }, [state?.settings.onboardingComplete]);
   useEffect(() => {
-    stateRef.current = state;
-    if (!state) return;
+    if (!state || !active.current) return;
     const revision = ++saveRevision.current;
-    setSaveStatus("Saving your account…");
+    const ticket = feedback.beginSave();
     store
       .saveState(state)
       .then(() => {
-        if (active.current && revision === saveRevision.current) {
-          setSaveStatus(
-            store.status().offline
-              ? "Saved on device · sync pending"
-              : "Saved to your account",
-          );
+        if (
+          active.current &&
+          revision === saveRevision.current &&
+          feedback.saved(ticket, { offline: store.status().offline })
+        ) {
           durableState.current = state;
           syncReminders(state, systemClock, identity.id).catch((e) =>
             notify(`Reminder scheduling needs attention: ${e.message}`),
@@ -240,8 +244,11 @@ function Planner({
       })
       .catch((e) => {
         if (!active.current || accessDenied(e)) return;
-        if (active.current && revision === saveRevision.current) {
-          setSaveStatus("Save failed");
+        if (
+          active.current &&
+          revision === saveRevision.current &&
+          feedback.failed(ticket)
+        ) {
           notify(`Your latest changes could not be saved: ${e.message}`);
         }
       });
@@ -258,27 +265,24 @@ function Planner({
     });
     return () => sub.remove();
   }, []);
-  const change = (fn: (a: AppState) => AppState) =>
-    setState((a) => {
-      if (!a) return a;
-      const next = fn(a);
-      if (
-        !next.settings.onboardingComplete &&
-        next.settings.onboardingStep === 0 &&
-        next.entries.length === 0 &&
-        next.tasks.length === 0 &&
-        next.sleepLogs.length === 0
-      )
-        history.current = [];
-      else {
-        history.current.push(a);
-        if (history.current.length > 12) history.current.shift();
-      }
-      return next;
-    });
+  const change = (fn: (a: AppState) => AppState) => {
+    const a = stateRef.current;
+    if (!a || !active.current) return;
+    const next = fn(a);
+    const reset =
+      !next.settings.onboardingComplete &&
+      next.settings.onboardingStep === 0 &&
+      next.entries.length === 0 &&
+      next.tasks.length === 0 &&
+      next.sleepLogs.length === 0;
+    if (!feedback.edit(a, next, !reset)) return;
+    stateRef.current = next;
+    setState(next);
+  };
   const undo = () => {
-    const previous = history.current.pop();
+    const previous = feedback.undo();
     if (previous) {
+      stateRef.current = previous;
       setState(previous);
       notify(
         "Recent change undone. Plans and reminders refresh from the restored data.",
@@ -310,7 +314,7 @@ function Planner({
                     <Button
                       title="Log out"
                       secondary
-                      onPress={() => void logout()}
+                      onPress={() => void leaveAccount()}
                     />
                   </>
                 )}
@@ -357,47 +361,11 @@ function Planner({
                       accessibilityLabel="Wakey-Wakey!"
                     />
                   </View>
-                  <View
-                    style={{ alignItems: "flex-end", gap: 5, flexShrink: 0 }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: 10,
-                        color: saveStatus === "Save failed" ? c.red : c.muted,
-                      }}
-                    >
-                      {saveStatus}
-                    </Text>
-                    {state.settings.onboardingComplete && (
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={undo}
-                        onFocus={() => setFocusedControl("undo")}
-                        onBlur={() => setFocusedControl("")}
-                        style={({ pressed }) => ({
-                          padding: 7,
-                          backgroundColor: c.accent,
-                          borderRadius: 7,
-                          outlineColor: c.onAccent,
-                          outlineWidth:
-                            pressed || focusedControl === "undo" ? 2 : 0,
-                          outlineStyle: "solid",
-                          outlineOffset: -3,
-                          transform: [{ translateY: pressed ? 1 : 0 }],
-                        })}
-                      >
-                        <Text
-                          style={{
-                            color: c.onAccent,
-                            fontSize: 12,
-                            fontWeight: "600",
-                          }}
-                        >
-                          ↶ Undo recent edit
-                        </Text>
-                      </Pressable>
-                    )}
-                  </View>
+                  <HeaderFeedback
+                    controller={feedback}
+                    onUndo={undo}
+                    allowUndo={state.settings.onboardingComplete}
+                  />
                 </View>
                 <View style={{ flex: 1, flexDirection: "row" }}>
                   {wide && state.settings.onboardingComplete && (
@@ -504,7 +472,7 @@ function Planner({
                           }
                           accountEmail={identity.email}
                           accountId={identity.id}
-                          logout={logout}
+                          logout={leaveAccount}
                         />
                       )}
                     </View>

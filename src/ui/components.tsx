@@ -8,6 +8,7 @@ import {
   Switch,
   Platform,
   ViewStyle,
+  ViewProps,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { AppState } from "../model";
@@ -172,12 +173,15 @@ export function Card({
 export function Row({
   children,
   style,
+  onLayout,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
+  onLayout?: ViewProps["onLayout"];
 }) {
   return (
     <View
+      onLayout={onLayout}
       style={[
         {
           flexDirection: "row",
@@ -431,6 +435,8 @@ export function Toggle({
     </View>
   );
 }
+export type ChoiceLabel = string | { primary: string; secondary: string };
+
 export function Choices<T extends string>({
   values,
   value,
@@ -440,47 +446,75 @@ export function Choices<T extends string>({
   values: T[];
   value: T;
   onChange: (v: T) => void;
-  labels?: Partial<Record<T, string>>;
+  labels?: Partial<Record<T, ChoiceLabel>>;
 }) {
   const c = useTheme();
   const [focused, setFocused] = useState<T | null>(null);
+  const [availableWidth, setAvailableWidth] = useState(0);
+  const structuredGrid =
+    values.length === 4 && values.every((v) => typeof labels?.[v] === "object");
+  const fourColumns = availableWidth >= 414;
   return (
-    <Row style={{ backgroundColor: c.card }}>
-      {values.map((v) => (
-        <Pressable
-          key={v}
-          accessibilityRole="button"
-          accessibilityLabel={labels?.[v] ?? v}
-          accessibilityState={{ selected: v === value }}
-          aria-pressed={v === value}
-          onPress={() => onChange(v)}
-          onFocus={() => setFocused(v)}
-          onBlur={() => setFocused(null)}
-          style={({ pressed }) => ({
-            backgroundColor: c.accent,
-            borderRadius: 10,
-            padding: 12,
-            minHeight: 44,
-            borderColor: c.line,
-            borderWidth: 1,
-            outlineColor: focused === v ? c.orange : c.white,
-            outlineWidth: v === value || pressed || focused === v ? 2 : 0,
-            outlineOffset: focused === v ? 2 : -4,
-            transform: [{ translateY: pressed ? 1 : 0 }],
-          })}
-        >
-          <Text
-            style={{
-              fontSize: 12,
-              fontWeight: v === value ? "800" : "600",
-              color: c.white,
-              textDecorationLine: v === value ? "underline" : "none",
-            }}
+    <Row
+      style={{ backgroundColor: c.card }}
+      onLayout={
+        structuredGrid
+          ? (event) => setAvailableWidth(event.nativeEvent.layout.width)
+          : undefined
+      }
+    >
+      {values.map((v) => {
+        const label = labels?.[v] ?? v;
+        return (
+          <Pressable
+            key={v}
+            accessibilityRole="button"
+            accessibilityLabel={
+              typeof label === "string"
+                ? label
+                : `${label.primary} ${label.secondary}`
+            }
+            accessibilityState={{ selected: v === value }}
+            aria-pressed={v === value}
+            onPress={() => onChange(v)}
+            onFocus={() => setFocused(v)}
+            onBlur={() => setFocused(null)}
+            style={({ pressed }) => ({
+              backgroundColor: c.accent,
+              borderRadius: 10,
+              padding: 12,
+              minHeight: 44,
+              ...(structuredGrid
+                ? {
+                    minWidth: 96,
+                    flexGrow: 1,
+                    flexBasis: fourColumns ? 96 : ("47%" as const),
+                  }
+                : {}),
+              borderColor: c.line,
+              borderWidth: 1,
+              outlineColor: focused === v ? c.orange : c.white,
+              outlineWidth: v === value || pressed || focused === v ? 2 : 0,
+              outlineOffset: focused === v ? 2 : -4,
+              transform: [{ translateY: pressed ? 1 : 0 }],
+            })}
           >
-            {labels?.[v] ?? v}
-          </Text>
-        </Pressable>
-      ))}
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: v === value ? "800" : "600",
+                color: c.white,
+                textDecorationLine: v === value ? "underline" : "none",
+                textAlign: typeof label === "string" ? undefined : "center",
+              }}
+            >
+              {typeof label === "string"
+                ? label
+                : `${label.primary}\n${label.secondary}`}
+            </Text>
+          </Pressable>
+        );
+      })}
     </Row>
   );
 }

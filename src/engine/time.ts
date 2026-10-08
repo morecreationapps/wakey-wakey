@@ -64,13 +64,17 @@ export function displayTime(
   }).format(epoch);
 }
 
+export function isWrittenDateFormat(format: Settings["dateFormat"]): boolean {
+  return format === "LONG" || format === "LONG_ISO";
+}
+
 export function displayDate(
   date: ISODate,
   format: Settings["dateFormat"] = "UK",
 ): string {
   const d = Temporal.PlainDate.from(date, { overflow: "reject" });
   if (format === "ISO") return d.toString();
-  if (format === "LONG") {
+  if (isWrittenDateFormat(format)) {
     const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const months = [
       "January",
@@ -86,6 +90,8 @@ export function displayDate(
       "November",
       "December",
     ];
+    if (format === "LONG_ISO")
+      return `${weekdays[d.dayOfWeek - 1]} ${d.year} ${months[d.month - 1]} ${d.day}`;
     const lastTwo = d.day % 100;
     const suffix =
       lastTwo >= 11 && lastTwo <= 13
@@ -101,7 +107,7 @@ export function displayLocalDateTime(
   local: string,
   format: Settings["dateFormat"] = "UK",
 ): string {
-  return format === "LONG"
+  return isWrittenDateFormat(format)
     ? `${displayDate(local.slice(0, 10), format)} ${local.slice(11)}`
     : local.replace("T", " ");
 }
