@@ -6,7 +6,6 @@ import {
   addDays,
   dateInZone,
   displayDate,
-  displayLocalDateTime,
   displayTime,
   localAt,
   zonedEpoch,
@@ -25,10 +24,26 @@ import {
   Notice,
   ui,
 } from "./components";
+import { DateTimePickerField, TimePickerField } from "./DateTimePickers";
+import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
+
+function pickerText(value: string, format: (value: string) => string): string {
+  try {
+    return format(value);
+  } catch {
+    return value;
+  }
+}
+
 export function Plan({ state, change, notify }: ScreenProps) {
   const s = state.settings,
     today = dateInZone(systemClock, s.timezone),
     next = nextWork(state.entries, systemClock, s.timezone);
+  const nextShiftTime = next?.start
+    ? pickerText(next.start.slice(11, 16), (value) =>
+        formatPickerTime(value, s.clockFormat),
+      )
+    : "";
   const [edit, setEdit] = useState<Task | null>(null),
     [includeDone, setIncludeDone] = useState(false);
   const slots = planTasks(state.tasks, state.entries, s, systemClock);
@@ -81,7 +96,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
           /^([01]\d|2[0-3]):[0-5]\d$/.test(x),
         )
       )
-        throw Error("Preferred windows use HH:mm.");
+        throw Error("Choose valid preferred window start and end times.");
       if (edit.scheduledStart) zonedEpoch(edit.scheduledStart, s.timezone);
       const task = {
         ...edit,
@@ -124,7 +139,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
         <Heading small>Prepare for my next shift</Heading>
         <Body>
           {next
-            ? `${next.duty || next.category} · ${displayDate(next.date, s.dateFormat)} · ${next.start?.split("T")[1]}`
+            ? `${next.duty || next.category} · ${displayDate(next.date, s.dateFormat)}${nextShiftTime ? ` · ${nextShiftTime}` : ""}`
             : "No next duty recorded. Add your rota first."}
         </Body>
         <Body muted>
@@ -217,26 +232,31 @@ export function Plan({ state, change, notify }: ScreenProps) {
               hint="Reserved before the task; include any extra occupied travel in its total duration."
             />
           </Row>
-          <Field
-            label="Earliest / fixed start YYYY-MM-DDTHH:mm"
+          <Body muted>Times use {s.timezone}.</Body>
+          <DateTimePickerField
+            label="Earliest / fixed start"
             value={edit.earliest}
             onChange={(v) => put({ earliest: v })}
+            settings={s}
           />
-          <Field
-            label="Deadline YYYY-MM-DDTHH:mm"
+          <DateTimePickerField
+            label="Deadline"
             value={edit.deadline}
             onChange={(v) => put({ deadline: v })}
+            settings={s}
           />
           <Row>
-            <Field
-              label="Preferred window start HH:mm"
+            <TimePickerField
+              label="Preferred window start"
               value={edit.windowStart}
               onChange={(v) => put({ windowStart: v })}
+              clockFormat={s.clockFormat}
             />
-            <Field
-              label="Preferred window end HH:mm"
+            <TimePickerField
+              label="Preferred window end"
               value={edit.windowEnd}
               onChange={(v) => put({ windowEnd: v })}
+              clockFormat={s.clockFormat}
             />
           </Row>
           <Field
@@ -279,11 +299,18 @@ export function Plan({ state, change, notify }: ScreenProps) {
             }
           />
           {(edit.locked || edit.kind === "fixed") && (
-            <Field
-              label="Locked start YYYY-MM-DDTHH:mm"
-              value={edit.scheduledStart ?? edit.earliest}
-              onChange={(v) => put({ scheduledStart: v })}
-            />
+            <>
+              <Body muted>
+                Locked start sets this commitment’s appointment time. Changing
+                earliest time keeps an existing locked start.
+              </Body>
+              <DateTimePickerField
+                label="Locked start"
+                value={edit.scheduledStart ?? edit.earliest}
+                onChange={(v) => put({ scheduledStart: v })}
+                settings={s}
+              />
+            </>
           )}
           <Row>
             <Button title="Save task" onPress={save} />
@@ -326,7 +353,9 @@ export function Plan({ state, change, notify }: ScreenProps) {
               </Row>
               <Body>
                 {t.minutes} min · Deadline{" "}
-                {displayLocalDateTime(t.deadline, s.dateFormat)}
+                {pickerText(t.deadline, (value) =>
+                  formatPickerDateTime(value, s.dateFormat, s.clockFormat),
+                )}
                 {t.recurrence === "none" ? "" : ` · ${t.recurrence}`}
               </Body>
               {occurrences.slice(0, 8).map((o, i) => (
