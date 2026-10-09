@@ -156,6 +156,8 @@ function TimelineRow({
   icon,
   settings,
   timezone,
+  expanded: controlledExpanded,
+  onToggle,
 }: {
   label: string;
   at: number | null;
@@ -166,9 +168,12 @@ function TimelineRow({
   icon: TimelineIcon;
   settings: Settings;
   timezone: string;
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
   const c = useTheme();
-  const [expanded, setExpanded] = useState(false);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? localExpanded;
   const [focused, setFocused] = useState(false);
   const startDate = at == null ? null : localAt(at, timezone).slice(0, 10);
   const endDate = end == null ? null : localAt(end, timezone).slice(0, 10);
@@ -195,7 +200,7 @@ function TimelineRow({
         aria-expanded={expanded}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        onPress={() => setExpanded(!expanded)}
+        onPress={onToggle ?? (() => setLocalExpanded(!expanded))}
         style={({ pressed }) => ({
           flexDirection: "row",
           gap: 10,
@@ -413,12 +418,16 @@ function DayTimeline({
   timezone,
   change,
   notify,
+  selectedRow,
+  selectRow,
 }: {
   rows: PreparationRow[];
   state: ScreenProps["state"];
   timezone: string;
   change: ScreenProps["change"];
   notify: ScreenProps["notify"];
+  selectedRow: string | null;
+  selectRow: (id: string | null) => void;
 }) {
   const [deleteRow, setDeleteRow] = useState<string | null>(null);
   const statusLabels: Record<string, string> = {
@@ -435,6 +444,7 @@ function DayTimeline({
     <View style={ui.section}>
       {rows.map((row) => {
         const task = state.tasks.find((task) => task.id === row.taskId);
+        const selected = selectedRow === row.id;
         const confirming = deleteRow === row.id;
         return (
           <View key={row.id} style={{ gap: 8 }}>
@@ -452,9 +462,14 @@ function DayTimeline({
               icon={timelineIcon(row.kind)}
               settings={state.settings}
               timezone={timezone}
+              expanded={selected}
+              onToggle={() => {
+                setDeleteRow(null);
+                selectRow(selected ? null : row.id);
+              }}
             />
             {row.conflict && <Notice error>{row.conflict}</Notice>}
-            {task && (
+            {task && selected && (
               <View style={{ gap: 8 }}>
                 {confirming && (
                   <Body>
@@ -499,6 +514,7 @@ function DayTimeline({
                         ),
                       }));
                       setDeleteRow(null);
+                      selectRow(null);
                       notify(
                         `“${task.title}” deleted. Undo recent edit is available for one minute.`,
                       );
@@ -529,6 +545,9 @@ export function Today({
     s = state.settings,
     today = dateInZone(systemClock, s.timezone);
   const [focusedTask, setFocusedTask] = useState<string | null>(null);
+  const [selectedTimelineRow, selectTimelineRow] = useState<string | null>(
+    null,
+  );
   const [contentWidth, setContentWidth] = useState(0);
   const wide = contentWidth >= 800;
   const current = state.entries.find((e) => {
@@ -824,6 +843,8 @@ export function Today({
                 timezone={panels.timezone}
                 change={change}
                 notify={notify}
+                selectedRow={selectedTimelineRow}
+                selectRow={selectTimelineRow}
               />
               {panels.transitionRows.length === 0 && (
                 <Body>
@@ -873,6 +894,8 @@ export function Today({
                 timezone={panels.timezone}
                 change={change}
                 notify={notify}
+                selectedRow={selectedTimelineRow}
+                selectRow={selectTimelineRow}
               />
               {panels.shiftRows.length === 0 && (
                 <Body>
