@@ -543,7 +543,7 @@ describe("task-aware day-before suggestions", () => {
       plan.rows.find((r) => r.taskId === "appointment")?.conflict,
     ).toBeTruthy();
   });
-  it("flags fixed appointment, routine and wrong-date conflicts on both the row and shared placement", () => {
+  it("flags real appointment and routine conflicts without treating the shift day itself as invalid", () => {
     const entry = shift(),
       s = settings(),
       entries = [rest("2026-10-09"), entry];
@@ -576,6 +576,9 @@ describe("task-aware day-before suggestions", () => {
       expect(localAt(p.start!, zone)).toBe(task.scheduledStart);
     }
     expect(plan.rows.find((r) => r.taskId === "wrong")?.conflict).toContain(
+      "work and travel",
+    );
+    expect(plan.rows.find((r) => r.taskId === "wrong")?.conflict).not.toContain(
       "calendar day before",
     );
     expect(plan.rows.find((r) => r.taskId === "sleep")?.conflict).toContain(

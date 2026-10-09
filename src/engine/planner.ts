@@ -678,6 +678,17 @@ export function planShift(
       conflicts.push(
         "The previous duty runs into the planned sleep or wind-down period. The sleep target has not been shortened.",
       );
+    else if (
+      protectedStart !== undefined &&
+      finiteMinutes(settings.returnMinutes) &&
+      finiteMinutes(settings.postWorkMinutes) &&
+      previous.end +
+        (settings.returnMinutes + settings.postWorkMinutes) * MINUTE >
+        protectedStart
+    )
+      conflicts.push(
+        "Return travel and necessary post-work activities after the previous duty run into the planned sleep or wind-down period. The planned times and sleep target have not been changed.",
+      );
   }
   {
     const intervals: Interval[] = [{ start, end: end ?? start, label: "work" }];

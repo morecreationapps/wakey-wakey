@@ -481,9 +481,27 @@ export function planPreparation(
           },
         ];
   });
-  const routineTasks = occurrences.filter(({ task }) => bedtimeActivity(task));
+  // A deliberate shift-day choice belongs to that day's schedule. It must not
+  // inherit the previous evening's deadline or bedtime-routine constraints.
+  const chosenOnShiftDate = (task: Task, occurrenceDate?: string) => {
+    if (!fixedTask(task) && task.preparationAutoStart === true) return false;
+    const raw = task.scheduledStart ?? (fixedTask(task) ? task.earliest : "");
+    const chosen = safeEpoch(
+      occurrenceDate && raw ? `${occurrenceDate}T${raw.slice(11, 16)}` : raw,
+      settings.timezone,
+    );
+    return (
+      chosen !== null &&
+      localAt(chosen, next!.timezone).slice(0, 10) === nextDate
+    );
+  };
+  const routineTasks = occurrences.filter(
+    ({ task, occurrenceDate }) =>
+      bedtimeActivity(task) && !chosenOnShiftDate(task, occurrenceDate),
+  );
   const ordinaryTasks = occurrences.filter(
-    ({ task }) => !bedtimeActivity(task),
+    ({ task, occurrenceDate }) =>
+      !bedtimeActivity(task) || chosenOnShiftDate(task, occurrenceDate),
   );
   const bedtime = event("bedtime")?.at,
     windStart = event("windDown")?.at,
@@ -711,7 +729,8 @@ export function planPreparation(
     }
     for (const [i, part] of parts.entries()) {
       const wrongDate =
-        localAt(part.start, next!.timezone).slice(0, 10) !== preparationDate;
+        localAt(part.start, next!.timezone).slice(0, 10) !== preparationDate &&
+        !chosenOnShiftDate(task, occurrenceDate);
       const conflict = unique([
         ...(p?.conflict ? [p.conflict] : []),
         ...(wrongDate
@@ -952,10 +971,12 @@ export function planPreparation(
     }
   }
   const normalCandidates = selected
-    .filter((t) => !bedtimeActivity(t))
+    .filter((t) => !bedtimeActivity(t) || chosenOnShiftDate(t))
     .map((task) => {
       if (!ordinaryTasks.some((o) => o.task.id === task.id) || fixedTask(task))
         return task;
+      if (chosenOnShiftDate(task))
+        return { ...task, locked: true, movable: false };
       const start = safeEpoch(task.earliest, settings.timezone),
         deadline = safeEpoch(task.deadline, settings.timezone),
         preferred = safeEpoch(task.scheduledStart, settings.timezone);
@@ -1177,10 +1198,47 @@ export function planPreparation(
             }),
         )
         .map((b) => `Overlaps ${b.label}.`);
+      // General placement reserves fixed commitments in input order. Review a
+      // deliberate day-of start against every fixed placement so an earlier
+      // input cannot silently overlap an appointment processed after it.
+      const chosenCommitmentClashes = chosenOnShiftDate(task, occurrenceDate)
+        ? normalPlacements.flatMap((other) => {
+            if (
+              other.taskId === task.id ||
+              other.start === null ||
+              other.end === null
+            )
+              return [];
+            const commitment = selected.find(
+              (candidate) => candidate.id === other.taskId,
+            );
+            if (
+              !commitment ||
+              (!fixedTask(commitment) &&
+                !chosenOnShiftDate(commitment, other.occurrenceDate))
+            )
+              return [];
+            return intersects(
+              {
+                start: p!.start! - task.travelMinutes * MINUTE,
+                end: p!.end!,
+                label: task.title,
+              },
+              {
+                start: other.start - commitment.travelMinutes * MINUTE,
+                end: other.end,
+                label: commitment.title,
+              },
+            )
+              ? [`Overlaps fixed commitment: ${commitment.title}.`]
+              : [];
+          })
+        : [];
       const issues = unique([
         ...(p.conflict ? [p.conflict] : []),
         ...routineClashes,
-        ...availabilityIssues,
+        ...chosenCommitmentClashes,
+        ...(chosenOnShiftDate(task, occurrenceDate) ? [] : availabilityIssues),
       ]);
       if (issues.length) p.conflict = issues.join(" ");
       if (
@@ -1269,9 +1327,11 @@ export function planPreparation(
     result.conflicts.push(
       `The calculated bedtime is ${localAt(bedtime, next.timezone)}, outside the previous calendar day ${preparationDate}. Review the sleep and wake settings; bedtime has not been moved to a different date.`,
     );
-  const overridden = new Set(rowPlacements.map((p) => p.taskId));
+  const placementKey = (p: TaskPlacement) =>
+    `${p.taskId}:${p.occurrenceDate ?? "once"}`;
+  const overridden = new Set(rowPlacements.map(placementKey));
   result.placements = [
-    ...originalPlacements.filter((p) => !overridden.has(p.taskId)),
+    ...originalPlacements.filter((p) => !overridden.has(placementKey(p))),
     ...rowPlacements,
   ];
   result.rows.sort(

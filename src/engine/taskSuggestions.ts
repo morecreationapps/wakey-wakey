@@ -208,7 +208,20 @@ function suggest(
         ? overrides.earliest
         : undefined;
   if (explicit !== undefined) start = epoch(explicit, settings.timezone);
-  const neutralDeadline = localAt(dayEnd - MINUTE, settings.timezone),
+  const neutralDeadline = localAt(
+      explicit !== undefined && start !== null
+        ? Math.max(
+            onDate(
+              addDays(localAt(start, settings.timezone).slice(0, 10), 1),
+              "00:00",
+              settings.timezone,
+            ),
+            start +
+              (Number.isFinite(minutes) && minutes > 0 ? minutes : 0) * MINUTE,
+          )
+        : dayEnd - MINUTE,
+      settings.timezone,
+    ),
     earliest = localAt(start ?? dayStart, settings.timezone);
   const candidate: Task = {
     id,
@@ -437,7 +450,10 @@ function suggest(
     ]
       .filter(Boolean)
       .join(" ");
-  const explanation = `Suggested editable ${minutes}-minute activity for ${displayDate(date, settings.dateFormat)}, the calendar day before ${next.duty || "your selected shift"}. ${start === null ? "The date and duration are known; a start time needs the missing inputs or a permitted free slot shown below." : activity === "shower" ? "The proposed slot is calculated before wind-down, working backwards from bedtime; review any flagged conflicts." : activity === "sleep" ? "This time starts the bedtime routine; full planned sleep remains protected in Shift Plan." : activity === "windDown" ? "Its duration is calculated backwards from planned bedtime using your sleep and wake settings." : "Recorded work, travel, calculated sleep, task dependencies and saved commitments remain protected; review any provisional inputs."}`;
+  const explanation =
+    explicit !== undefined && start !== null
+      ? `Your chosen date and time are retained for this editable ${minutes}-minute activity. It appears in the panel for that calendar day; recorded work, travel, protected sleep and fixed commitments still determine any conflicts.`
+      : `Suggested editable ${minutes}-minute activity for ${displayDate(date, settings.dateFormat)}, the calendar day before ${next.duty || "your selected shift"}. ${start === null ? "The date and duration are known; a start time needs the missing inputs or a permitted free slot shown below." : activity === "shower" ? "The proposed slot is calculated before wind-down, working backwards from bedtime; review any flagged conflicts." : activity === "sleep" ? "This time starts the bedtime routine; full planned sleep remains protected across the two day-specific panels." : activity === "windDown" ? "Its duration is calculated backwards from planned bedtime using your sleep and wake settings." : "Recorded work, travel, calculated sleep, task dependencies and saved commitments remain protected; review any provisional inputs."}`;
   return {
     kind,
     minutes,

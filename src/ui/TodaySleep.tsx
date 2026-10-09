@@ -10,7 +10,7 @@ import {
 import {
   completePreparationTask,
   planPreparation,
-  type PreparationPlan,
+  type PreparationRow,
 } from "../engine/preparation";
 import {
   dateInZone,
@@ -40,6 +40,7 @@ import {
 import { DatePickerField, DateTimePickerField } from "./DateTimePickers";
 import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
 import { snapshotTaskPlacement } from "./taskDraft";
+import { shiftDayPanels } from "../engine/shiftDayPanels";
 
 function MissingInputs({
   items,
@@ -405,17 +406,16 @@ export function TransitionCard({
     </Card>
   );
 }
-function PreparationTimeline({
-  plan,
+/** Rows are already assigned to one selected-shift calendar date by the engine. */
+function DayTimeline({
+  rows,
   state,
-  navigate,
+  timezone,
 }: {
-  plan: PreparationPlan;
+  rows: PreparationRow[];
   state: ScreenProps["state"];
-  navigate: (tab: string) => void;
+  timezone: string;
 }) {
-  const s = state.settings;
-  const entry = plan.nextShift;
   const statusLabels: Record<string, string> = {
     pending: "Planned",
     accepted: "Accepted",
@@ -428,103 +428,24 @@ function PreparationTimeline({
   };
   return (
     <View style={ui.section}>
-      {entry ? (
-        <>
-          <Body style={{ fontWeight: "600" }}>
-            {plan.preparationDate
-              ? displayDate(plan.preparationDate, s.dateFormat)
-              : "Preparation date needed"}
-          </Body>
-          <Body muted style={{ fontSize: 12 }}>
-            The day before {entry.duty || entry.category} ·{" "}
-            {displayDate(entry.date, s.dateFormat)} ·{" "}
-            {entry.start
-              ? formatPickerTime(entry.start.slice(11, 16), s.clockFormat)
-              : "Start needed"}
-            .
-          </Body>
-        </>
-      ) : (
-        <>
-          <Body>
-            No future work shift is recorded. Add your next shift to build a
-            timed preparation plan.
-          </Body>
-          <Button
-            title="Add my next shift"
-            icon="calendar"
-            onPress={() => navigate("Rota")}
+      {rows.map((row) => (
+        <View key={row.id} style={{ gap: 8 }}>
+          <TimelineRow
+            label={row.label}
+            at={row.at}
+            end={row.end}
+            minutes={row.minutes}
+            status={
+              row.taskId ? (statusLabels[row.status] ?? row.status) : undefined
+            }
+            why={row.why}
+            icon={timelineIcon(row.kind)}
+            settings={state.settings}
+            timezone={timezone}
           />
-        </>
-      )}
-      {plan.conflicts.map((conflict) => (
-        <Notice error key={conflict}>
-          {conflict}
-        </Notice>
+          {row.conflict && <Notice error>{row.conflict}</Notice>}
+        </View>
       ))}
-      {plan.conflicts.length > 0 && (
-        <Button
-          title="Move or defer conflicting tasks"
-          small
-          secondary
-          icon="alert-triangle"
-          onPress={() => navigate("Plan")}
-        />
-      )}
-      {plan.rows.map((row) => {
-        const durationSetting =
-          row.routineId ??
-          (row.kind === "windDown"
-            ? "windDown"
-            : row.kind === "bedtime"
-              ? "latency"
-              : row.kind === "sleepStart"
-                ? "sleepTarget"
-                : undefined);
-        const suggestedDuration =
-          row.minutes != null &&
-          durationSetting != null &&
-          s.origins[durationSetting] === "suggested";
-        return (
-          <View key={row.id} style={{ gap: 8 }}>
-            <TimelineRow
-              label={row.label}
-              at={row.at}
-              end={row.end}
-              minutes={row.minutes}
-              status={`${statusLabels[row.status] ?? row.status}${suggestedDuration ? " · Suggested duration — editable" : ""}`}
-              why={row.why}
-              icon={timelineIcon(row.kind)}
-              settings={s}
-              timezone={entry?.timezone ?? s.timezone}
-            />
-            {row.conflict && !plan.conflicts.includes(row.conflict) && (
-              <Notice error>{row.conflict}</Notice>
-            )}
-          </View>
-        );
-      })}
-      {entry && plan.rows.length === 0 && (
-        <Body>
-          No preparation tasks have been added yet. Choose an idea or add a task
-          in Prepare for my next shift to start your schedule.
-        </Body>
-      )}
-      {entry && (
-        <Button
-          title="Edit preparation tasks"
-          small
-          secondary
-          icon="check-square"
-          onPress={() => navigate("Plan")}
-        />
-      )}
-      {entry && (
-        <Body muted style={{ fontSize: 11 }}>
-          Booked commitments stay fixed. Protected sleep is not shortened to fit
-          chores. Times use {entry.timezone}.
-        </Body>
-      )}
     </View>
   );
 }
@@ -560,6 +481,7 @@ export function Today({
     s,
     systemClock,
   );
+  const panels = shiftDayPanels(preparation, state.tasks, s);
   const placements = preparation.placements;
   const checklistNext = preparation.nextShift;
   const preparationTimezone = checklistNext?.timezone ?? s.timezone;
@@ -822,30 +744,104 @@ export function Today({
               checklistNext ? "Day-before preparation" : "Next shift needed"
             }
           />
-          <PreparationTimeline
-            plan={preparation}
-            state={state}
-            navigate={navigate}
-          />
+          {checklistNext && panels.preparationDate ? (
+            <>
+              <Body style={{ fontWeight: "600" }}>
+                {displayDate(panels.preparationDate, s.dateFormat)}
+              </Body>
+              <Body muted style={{ fontSize: 12 }}>
+                The calendar day before{" "}
+                {checklistNext.duty || checklistNext.category}. Planned
+                activities appear in time order.
+              </Body>
+              <DayTimeline
+                rows={panels.transitionRows}
+                state={state}
+                timezone={panels.timezone}
+              />
+              {panels.transitionRows.length === 0 && (
+                <Body>
+                  No activities are scheduled for the day before this shift.
+                  Choose an idea or add a task in Prepare for my next shift.
+                </Body>
+              )}
+              <Button
+                title="Edit preparation tasks"
+                small
+                secondary
+                icon="check-square"
+                onPress={() => navigate("Plan")}
+              />
+              <Body muted style={{ fontSize: 11 }}>
+                Times use {panels.timezone}.
+              </Body>
+            </>
+          ) : (
+            <>
+              <Body>
+                Add your next recorded work shift to see the previous day's
+                preparation here.
+              </Body>
+              <Button
+                title="Add my next shift"
+                icon="calendar"
+                onPress={() => navigate("Rota")}
+              />
+            </>
+          )}
         </Card>
         <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
           <Row style={{ justifyContent: "space-between" }}>
             <Heading small>Shift Plan</Heading>
             <Icon name="clock" />
           </Row>
-          {checklistNext && preparation.shiftPlan ? (
-            <PlanTimeline
-              entry={checklistNext}
-              state={state}
-              plan={preparation.shiftPlan}
-              navigate={navigate}
-              showMissingInputs={false}
-            />
+          {checklistNext && panels.shiftDate ? (
+            <>
+              <Pill text="Shift day" />
+              <Body style={{ fontWeight: "600" }}>
+                {displayDate(panels.shiftDate, s.dateFormat)}
+              </Body>
+              <DayTimeline
+                rows={panels.shiftRows}
+                state={state}
+                timezone={panels.timezone}
+              />
+              {panels.shiftRows.length === 0 && (
+                <Body>
+                  No activities have a calculated time on this shift's date yet.
+                </Body>
+              )}
+              {(panels.reviewRows.length > 0 ||
+                panels.otherShiftEvents.length > 0) && (
+                <View style={ui.section}>
+                  {panels.reviewRows.length > 0 && (
+                    <Button
+                      title="Review tasks with no time or another date"
+                      small
+                      secondary
+                      onPress={() => navigate("Plan")}
+                    />
+                  )}
+                  {panels.otherShiftEvents.length > 0 && (
+                    <Button
+                      title="View the full shift and sleep plan"
+                      small
+                      secondary
+                      onPress={() => navigate("Sleep")}
+                    />
+                  )}
+                </View>
+              )}
+              <Body muted style={{ fontSize: 11 }}>
+                Planned sleep is an opportunity, not measured sleep. Times use{" "}
+                {panels.timezone}.
+              </Body>
+            </>
           ) : (
             <>
               <Body>
-                Add your next recorded work shift to see preparation, departure
-                and sleep opportunities here.
+                Add your next recorded work shift to see its shift-day schedule
+                here.
               </Body>
               <Button
                 title="Add my next shift"
@@ -856,6 +852,23 @@ export function Today({
           )}
         </Card>
       </View>
+      {!!preparation.shiftPlan?.conflicts.length && (
+        <Card>
+          <Heading small>Plan needs review</Heading>
+          {[...new Set(preparation.shiftPlan.conflicts)].map((conflict) => (
+            <Notice error key={conflict}>
+              {conflict}
+            </Notice>
+          ))}
+          <Button
+            title="Review tasks and conflicts"
+            small
+            secondary
+            icon="alert-triangle"
+            onPress={() => navigate("Plan")}
+          />
+        </Card>
+      )}
       <Card>
         <Label>Room for recovery</Label>
         <Heading small>Sleep is part of the plan.</Heading>

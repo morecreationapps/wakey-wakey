@@ -161,6 +161,48 @@ describe("deterministic shift plans", () => {
     expect(plan.provisional).toBe(true);
   });
 
+  it("flags prior return travel and recovery overlapping wind-down even when the full sleep target fits", () => {
+    const entry = duty("2026-10-10", "Late");
+    const previous = duty("2026-10-09", "Custom", {
+      start: "2026-10-09T12:00",
+      end: "2026-10-09T20:50",
+    });
+    const s = settings({ beforeLateBed: "22:00", beforeLateWake: "07:00" });
+    const plan = planShift(entry, s, [previous, entry]);
+    expect(plan.availableSleepMinutes).toBeGreaterThan(s.sleepTarget!);
+    expect(plan.conflicts.join(" ")).toContain(
+      "Return travel and necessary post-work activities after the previous duty run into",
+    );
+    expect(timeOf(plan, "windDown")).toBe("2026-10-09T21:00");
+    expect(timeOf(plan, "bedtime")).toBe("2026-10-09T22:00");
+    expect(timeOf(plan, "wake")).toBe("2026-10-10T07:00");
+  });
+
+  it("permits prior recovery ending exactly at wind-down and does not invent unknown recovery durations", () => {
+    const entry = duty("2026-10-10", "Late");
+    const previous = duty("2026-10-09", "Custom", {
+      start: "2026-10-09T12:00",
+      end: "2026-10-09T20:50",
+    });
+    for (const patch of [
+      { returnMinutes: 5, postWorkMinutes: 5 },
+      { returnMinutes: null, postWorkMinutes: 30 },
+      { returnMinutes: 20, postWorkMinutes: null },
+    ]) {
+      const plan = planShift(
+        entry,
+        settings({ beforeLateBed: "22:00", beforeLateWake: "07:00", ...patch }),
+        [previous, entry],
+      );
+      expect(plan.conflicts.join(" ")).not.toContain(
+        "Return travel and necessary post-work activities after the previous duty run into",
+      );
+      if (patch.returnMinutes === null || patch.postWorkMinutes === null)
+        expect(plan.missing.length).toBeGreaterThan(0);
+      expect(timeOf(plan, "windDown")).toBe("2026-10-09T21:00");
+    }
+  });
+
   it("H: extends a scheduled finish once, while an actual finish supersedes overtime", () => {
     const late = duty("2032-08-14", "Late", { overtimeMinutes: 60 });
     const early = duty("2032-08-15");
