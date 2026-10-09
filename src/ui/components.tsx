@@ -198,6 +198,7 @@ export function Row({
 }
 export function Button({
   title,
+  accessibilityLabel,
   onPress,
   icon,
   secondary = false,
@@ -206,6 +207,7 @@ export function Button({
   danger = false,
 }: {
   title: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   icon?: React.ComponentProps<typeof Feather>["name"];
   secondary?: boolean;
@@ -218,7 +220,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={title}
+      accessibilityLabel={accessibilityLabel ?? title}
       accessibilityState={{ disabled }}
       accessibilityHint={danger ? "Destructive action" : undefined}
       disabled={disabled}

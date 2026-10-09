@@ -411,11 +411,16 @@ function DayTimeline({
   rows,
   state,
   timezone,
+  change,
+  notify,
 }: {
   rows: PreparationRow[];
   state: ScreenProps["state"];
   timezone: string;
+  change: ScreenProps["change"];
+  notify: ScreenProps["notify"];
 }) {
+  const [deleteRow, setDeleteRow] = useState<string | null>(null);
   const statusLabels: Record<string, string> = {
     pending: "Planned",
     accepted: "Accepted",
@@ -428,24 +433,83 @@ function DayTimeline({
   };
   return (
     <View style={ui.section}>
-      {rows.map((row) => (
-        <View key={row.id} style={{ gap: 8 }}>
-          <TimelineRow
-            label={row.label}
-            at={row.at}
-            end={row.end}
-            minutes={row.minutes}
-            status={
-              row.taskId ? (statusLabels[row.status] ?? row.status) : undefined
-            }
-            why={row.why}
-            icon={timelineIcon(row.kind)}
-            settings={state.settings}
-            timezone={timezone}
-          />
-          {row.conflict && <Notice error>{row.conflict}</Notice>}
-        </View>
-      ))}
+      {rows.map((row) => {
+        const task = state.tasks.find((task) => task.id === row.taskId);
+        const confirming = deleteRow === row.id;
+        return (
+          <View key={row.id} style={{ gap: 8 }}>
+            <TimelineRow
+              label={row.label}
+              at={row.at}
+              end={row.end}
+              minutes={row.minutes}
+              status={
+                row.taskId
+                  ? (statusLabels[row.status] ?? row.status)
+                  : undefined
+              }
+              why={row.why}
+              icon={timelineIcon(row.kind)}
+              settings={state.settings}
+              timezone={timezone}
+            />
+            {row.conflict && <Notice error>{row.conflict}</Notice>}
+            {task && (
+              <View style={{ gap: 8 }}>
+                {confirming && (
+                  <Body>
+                    Delete “{task.title}”
+                    {task.recurrence !== "none"
+                      ? " and all its repeating occurrences"
+                      : ""}{" "}
+                    from your planner?
+                    {row.id.startsWith("shift-event:") &&
+                      " The calculated bedtime or wind-down will remain in your shift schedule."}
+                    {
+                      " You can undo this using Undo recent edit for one minute."
+                    }
+                  </Body>
+                )}
+                <Row style={{ justifyContent: "flex-end" }}>
+                  {confirming && (
+                    <Button
+                      title="Cancel"
+                      accessibilityLabel={`Cancel deleting ${task.title}`}
+                      small
+                      secondary
+                      onPress={() => setDeleteRow(null)}
+                    />
+                  )}
+                  <Button
+                    title={confirming ? "Confirm delete" : "Delete task"}
+                    accessibilityLabel={`${confirming ? "Confirm delete" : "Delete task"}: ${task.title}`}
+                    icon="trash-2"
+                    small
+                    secondary
+                    danger
+                    onPress={() => {
+                      if (!confirming) {
+                        setDeleteRow(row.id);
+                        return;
+                      }
+                      change((current) => ({
+                        ...current,
+                        tasks: current.tasks.filter(
+                          (item) => item.id !== task.id,
+                        ),
+                      }));
+                      setDeleteRow(null);
+                      notify(
+                        `“${task.title}” deleted. Undo recent edit is available for one minute.`,
+                      );
+                    }}
+                  />
+                </Row>
+              </View>
+            )}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -758,6 +822,8 @@ export function Today({
                 rows={panels.transitionRows}
                 state={state}
                 timezone={panels.timezone}
+                change={change}
+                notify={notify}
               />
               {panels.transitionRows.length === 0 && (
                 <Body>
@@ -805,6 +871,8 @@ export function Today({
                 rows={panels.shiftRows}
                 state={state}
                 timezone={panels.timezone}
+                change={change}
+                notify={notify}
               />
               {panels.shiftRows.length === 0 && (
                 <Body>
