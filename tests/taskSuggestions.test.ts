@@ -162,7 +162,7 @@ describe("task-aware day-before suggestions", () => {
       ).toBeNull();
     },
   );
-  it("uses existing suggested values and unconfirmed availability only for an editable preparation suggestion", () => {
+  it("keeps editable suggestions without treating setup guidance as task conflicts", () => {
     const entry = shift("Late"),
       unknown = { ...rest("2026-10-09"), status: "Unknown" as const },
       entries = [unknown, entry],
@@ -181,11 +181,7 @@ describe("task-aware day-before suggestions", () => {
     expect(v.earliest.slice(0, 10)).toBe("2026-10-09");
     expect(v.scheduledStart).not.toBeNull();
     expect(v.kind).toBe("essential");
-    expect(v.conflict).toContain("existing starting values");
-    expect(v.conflict).toContain(
-      "Availability on the preparation day is unconfirmed",
-    );
-    expect(v.conflict).toContain("full sleep target");
+    expect(v.conflict).toBeUndefined();
     const task = base("iron", "Iron my clothes", {
       ...v,
       deadline: "2026-10-09T23:59",
@@ -198,9 +194,8 @@ describe("task-aware day-before suggestions", () => {
     expect(
       localAt(p.rows.find((r) => r.taskId === task.id)!.at!, zone).slice(0, 10),
     ).toBe("2026-10-09");
-    expect(p.rows.find((r) => r.taskId === task.id)?.conflict).toContain(
-      "unconfirmed",
-    );
+    expect(p.rows.find((r) => r.taskId === task.id)?.conflict).toBeUndefined();
+    expect(p.rows.find((r) => r.taskId === task.id)?.status).toBe("pending");
     expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [task]));
     expect(
       planTasks(
@@ -233,7 +228,7 @@ describe("task-aware day-before suggestions", () => {
         clock(),
       )!;
     expect(v.earliest).toBe("2026-10-09T18:30");
-    expect(v.conflict).toContain("unconfirmed");
+    expect(v.conflict).toBeUndefined();
     const shower = base("shower", "Shower for bed", {
         ...v,
         deadline: "2026-10-09T23:59",

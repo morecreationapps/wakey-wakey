@@ -150,9 +150,7 @@ describe("separate sleep preferences for the night before a shift", () => {
       expect(v.preparationDate).toBe("2026-10-09");
       expect(v.minutes).toBe(30);
       expect(v.earliest).toBe(`2026-10-09T${shower}`);
-      expect(v.conflict).toContain(
-        "earlier on the preparation day are still unconfirmed",
-      );
+      expect(v.conflict).toBeUndefined();
       const prep = planPreparation(entries, [task], s, clock());
       expect(prep.rows.filter((r) => r.taskId === task.id)).toHaveLength(1);
       expect(prep.shiftPlan).toEqual(planShift(entry, s, entries, [task]));
@@ -174,9 +172,7 @@ describe("separate sleep preferences for the night before a shift", () => {
       const { v, task } = savedSuggestion(title, entries, s, tasks);
       expect(v.scheduledStart).not.toBeNull();
       expect(v.earliest.slice(0, 10)).toBe("2026-10-09");
-      expect(v.conflict).toContain(
-        "provisional timings near the bedtime routine",
-      );
+      expect(v.conflict).toBeUndefined();
       tasks.push(task);
     }
     const p = planPreparation(entries, [...tasks].reverse(), s, clock()),
@@ -481,9 +477,7 @@ describe("separate sleep preferences for the night before a shift", () => {
         clock(),
       )!;
       expect(iron.scheduledStart).not.toBeNull();
-      expect(iron.conflict).toContain(
-        "usual wake fallback for any blank field",
-      );
+      expect(iron.conflict).toBeUndefined();
       expect(s.restWake).toBeNull();
     },
   );
@@ -512,6 +506,31 @@ describe("separate sleep preferences for the night before a shift", () => {
       }),
       before = JSON.stringify(s),
       tasks: Task[] = [];
+    const clothes = savedSuggestion("Lay out clothes", entries, s);
+    expect(clothes.v.scheduledStart).toBe("2026-10-09T22:20");
+    const clothesPlan = planPreparation(entries, [clothes.task], s, clock());
+    const clothesRows = clothesPlan.rows.filter(
+      (row) => row.taskId === clothes.task.id,
+    );
+    expect(clothesRows).toHaveLength(1);
+    expect(clothesRows[0].at).toBe(zonedEpoch("2026-10-09T22:20", zone));
+    expect(clothesRows[0].status).toBe("pending");
+    expect(clothesRows[0].conflict).toBeUndefined();
+    const overlappingClothes = {
+      ...clothes.task,
+      kind: "fixed" as const,
+      movable: false,
+      locked: true,
+      scheduledStart: "2026-10-09T23:35",
+      earliest: "2026-10-09T23:35",
+      preparationAutoStart: false,
+    };
+    const overlap = planPreparation(entries, [overlappingClothes], s, clock());
+    const overlappingRow = overlap.rows.find(
+      (row) => row.taskId === clothes.task.id,
+    )!;
+    expect(overlappingRow.at).toBe(zonedEpoch("2026-10-09T23:35", zone));
+    expect(overlappingRow.conflict).toMatch(/sleep|wind-down|bedtime/i);
     for (const [title, expected] of [
       ["Shower for bed", "22:00"],
       ["Wind down", "22:30"],
@@ -520,7 +539,7 @@ describe("separate sleep preferences for the night before a shift", () => {
     ]) {
       const { v, task } = savedSuggestion(title, entries, s, tasks);
       expect(v.earliest).toBe(`2026-10-09T${expected}`);
-      expect(v.conflict).toContain("still unconfirmed");
+      expect(v.conflict).toBeUndefined();
       tasks.push(task);
     }
     for (const title of [
@@ -538,7 +557,7 @@ describe("separate sleep preferences for the night before a shift", () => {
       const v = suggestPreparationTask(title, entries, tasks, s, clock())!;
       expect(v.scheduledStart, title).not.toBeNull();
       expect(v.earliest.slice(0, 10)).toBe("2026-10-09");
-      expect(v.conflict).toContain("still unconfirmed");
+      expect(v.conflict).toBeUndefined();
     }
     expect(JSON.stringify(s)).toBe(before);
   });

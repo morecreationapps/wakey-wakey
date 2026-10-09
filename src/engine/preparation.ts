@@ -513,7 +513,9 @@ export function planPreparation(
           `The selected shift uses ${next.timezone}, while task times and routine preferences use ${settings.timezone}. Review these timezones before relying on the preparation schedule; its previous calendar day is anchored in the selected shift's timezone.`,
         ]
       : [];
-  availabilityIssues.push(...calculation.warnings);
+  // Calculation-context guidance is informational, not a task conflict.
+  // Keep actual scheduling issues below, without repeating setup guidance on
+  // every suggested or saved task or marking a feasible task as needing review.
   if (beforeShiftSleepPreferences(next, settings, nextStart))
     availabilityIssues.push(
       ...plan.conflicts,
@@ -833,13 +835,6 @@ export function planPreparation(
         start = null;
       }
     }
-    if (
-      !previousDayEntries.length ||
-      previousDayEntries.some((e) => e.status === "Unknown")
-    )
-      conflicts.push(
-        "Availability on the preparation day is not confirmed in the rota; review it before relying on this time.",
-      );
     if (
       previousDayEntries.some(
         (e) => e.status === "Holiday" && e.leaveApproval !== "confirmed",
