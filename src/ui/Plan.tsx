@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { Task, uid, systemClock } from "../model";
 import { planTasks, type TaskPlacement } from "../engine/planner";
 import { planPreparation } from "../engine/preparation";
+import { panelRollover } from "../engine/panelRollover";
 import {
   defaultPreparationTaskStart,
   suggestPreparationTask,
@@ -51,9 +52,11 @@ function pickerText(value: string, format: (value: string) => string): string {
 
 export function Plan({ state, change, notify }: ScreenProps) {
   const s = state.settings,
-    preparation = planPreparation(state.entries, state.tasks, s, systemClock),
-    next = preparation.nextShift,
-    preparationTimezone = next?.timezone ?? s.timezone;
+    reference = panelRollover(state.entries, s, systemClock).transitionShift,
+    preparation = planPreparation(state.entries, state.tasks, s, systemClock, {
+      selectedShift: reference ?? null,
+    }),
+    next = preparation.nextShift;
   const nextShiftTime = next?.start
     ? pickerText(next.start.slice(11, 16), (value) =>
         formatPickerTime(value, s.clockFormat),
@@ -64,6 +67,10 @@ export function Plan({ state, change, notify }: ScreenProps) {
     [suggestionNotice, setSuggestionNotice] = useState(""),
     [suggestionConflict, setSuggestionConflict] = useState(""),
     [draftDate, setDraftDate] = useState("");
+  const draftShift = edit?.linkedShiftId
+    ? state.entries.find((entry) => entry.id === edit.linkedShiftId)
+    : next;
+  const preparationTimezone = draftShift?.timezone ?? s.timezone;
   const editedFields = useRef(new Set<TaskDraftField>());
   const editingSavedTask = useRef(false);
   const preparationContext = useRef(false);
@@ -74,6 +81,11 @@ export function Plan({ state, change, notify }: ScreenProps) {
     : planTasks(state.tasks, state.entries, s, systemClock);
   function suggest(task: Task): Task {
     if (editingSavedTask.current) return task;
+    // A draft keeps its original selected duty through a calendar rollover.
+    const draftShift = task.linkedShiftId
+      ? state.entries.find((entry) => entry.id === task.linkedShiftId)
+      : next;
+    if (!draftShift) return task;
     const overrides = {
       id: task.id,
       kind: task.kind,
@@ -89,7 +101,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
         s,
         systemClock,
         overrides,
-        next,
+        draftShift,
       ) ??
       (preparationContext.current ||
       (editedFields.current.has("linkedShiftId") && task.linkedShiftId)
@@ -99,7 +111,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
             s,
             systemClock,
             overrides,
-            next,
+            draftShift,
           )
         : null);
     setSuggestionNotice(suggestion?.explanation ?? "");

@@ -348,7 +348,8 @@ export function planPreparation(
   shared: {
     shiftPlan?: ShiftPlan;
     placements?: TaskPlacement[];
-    selectedShift?: RotaEntry;
+    /** null explicitly clears a dated panel; undefined retains next-duty lookup. */
+    selectedShift?: RotaEntry | null;
   } = {},
 ): PreparationPlan {
   const now = clock.now(),
@@ -378,16 +379,20 @@ export function planPreparation(
     provisional: false,
   };
   let next =
-    shared.selectedShift ?? nextWork(entries, snapshotClock, settings.timezone);
-  const invalidUpcoming = shared.selectedShift
-    ? []
-    : entries.filter(
-        (entry) =>
-          entry.status === "Work" &&
-          entry.date >= today &&
-          (!next || entry.date <= next.date) &&
-          safeEpoch(entry.start, entry.timezone, entry.disambiguation) === null,
-      );
+    shared.selectedShift === undefined
+      ? nextWork(entries, snapshotClock, settings.timezone)
+      : (shared.selectedShift ?? undefined);
+  const invalidUpcoming =
+    shared.selectedShift !== undefined
+      ? []
+      : entries.filter(
+          (entry) =>
+            entry.status === "Work" &&
+            entry.date >= today &&
+            (!next || entry.date <= next.date) &&
+            safeEpoch(entry.start, entry.timezone, entry.disambiguation) ===
+              null,
+        );
   for (const entry of invalidUpcoming)
     result.missing.push(
       `Review the recorded work start on ${entry.date}; a valid time and timezone are needed to identify your next shift.`,

@@ -12,6 +12,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { AppState, systemClock } from "./src/model";
+import { startPlannerClock } from "./src/engine/plannerClock";
 import { initialState } from "./src/data/defaults";
 import {
   createAccountStore,
@@ -147,6 +148,9 @@ function Planner({
   logout: () => Promise<void>;
 }) {
   const active = useRef(true);
+  const plannerClock = useRef<ReturnType<typeof startPlannerClock> | null>(
+    null,
+  );
   const [focusedControl, setFocusedControl] = useState("");
   const [conflict, setConflict] = useState<AccountConflictReview | null>(null);
   const [recovery, setRecovery] = useState<AccountConflictRecovery | null>(
@@ -319,10 +323,23 @@ function Planner({
     active.current = true;
     feedback.activate();
     load();
-    const interval = setInterval(() => tick((x) => x + 1), 60000);
+    const clock = startPlannerClock(() => tick((x) => x + 1));
+    plannerClock.current = clock;
+    const refresh = () => {
+      if (typeof document === "undefined" || !document.hidden) clock.refresh();
+    };
+    if (typeof document !== "undefined")
+      document.addEventListener("visibilitychange", refresh);
+    if (typeof window !== "undefined")
+      window.addEventListener("focus", refresh);
     return () => {
       deactivate();
-      clearInterval(interval);
+      clock.stop();
+      plannerClock.current = null;
+      if (typeof document !== "undefined")
+        document.removeEventListener("visibilitychange", refresh);
+      if (typeof window !== "undefined")
+        window.removeEventListener("focus", refresh);
     };
   }, []);
   useEffect(() => {
@@ -366,7 +383,7 @@ function Planner({
   useEffect(() => {
     const sub = NativeAppState.addEventListener("change", (phase) => {
       if (phase === "active") {
-        tick((x) => x + 1);
+        plannerClock.current?.refresh();
         if (durableState.current)
           syncReminders(durableState.current, systemClock, identity.id).catch(
             (e) => notify(`Reminder refresh failed: ${e.message}`),

@@ -3,6 +3,7 @@ import { View, Pressable, Text } from "react-native";
 import { RotaEntry, Settings, systemClock, uid } from "../model";
 import {
   planShift,
+  nextWork,
   transitions,
   workBounds,
   type ShiftPlan,
@@ -41,6 +42,7 @@ import { DatePickerField, DateTimePickerField } from "./DateTimePickers";
 import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
 import { snapshotTaskPlacement } from "./taskDraft";
 import { shiftDayPanels } from "../engine/shiftDayPanels";
+import { panelRollover } from "../engine/panelRollover";
 
 function MissingInputs({
   items,
@@ -558,17 +560,33 @@ export function Today({
       return false;
     }
   });
+  const references = panelRollover(state.entries, s, systemClock);
   const preparation = planPreparation(
     state.entries,
     state.tasks,
     s,
     systemClock,
+    { selectedShift: references.transitionShift ?? null },
   );
   const panels = shiftDayPanels(preparation, state.tasks, s);
+  const shiftPreparation = planPreparation(
+    state.entries,
+    state.tasks,
+    s,
+    systemClock,
+    { selectedShift: references.shiftPlanShift ?? null },
+  );
+  const shiftPanels = shiftDayPanels(shiftPreparation, state.tasks, s);
   const placements = preparation.placements;
   const checklistNext = preparation.nextShift;
   const preparationTimezone = checklistNext?.timezone ?? s.timezone;
-  const next = current ?? checklistNext;
+  const next = current ?? nextWork(state.entries, systemClock, s.timezone);
+  const planConflicts = [
+    ...new Set([
+      ...(preparation.shiftPlan?.conflicts ?? []),
+      ...(shiftPreparation.shiftPlan?.conflicts ?? []),
+    ]),
+  ];
   const todayEntries = state.entries.filter((e) => e.date === today);
   const restToday = !current && todayEntries.some((e) => e.status === "Rest");
   const pending = state.tasks.filter(
@@ -882,30 +900,30 @@ export function Today({
             <Heading small>Shift Plan</Heading>
             <Icon name="clock" />
           </Row>
-          {checklistNext && panels.shiftDate ? (
+          {references.shiftPlanShift && shiftPanels.shiftDate ? (
             <>
               <Pill text="Shift day" />
               <Body style={{ fontWeight: "600" }}>
-                {displayDate(panels.shiftDate, s.dateFormat)}
+                {displayDate(shiftPanels.shiftDate, s.dateFormat)}
               </Body>
               <DayTimeline
-                rows={panels.shiftRows}
+                rows={shiftPanels.shiftRows}
                 state={state}
-                timezone={panels.timezone}
+                timezone={shiftPanels.timezone}
                 change={change}
                 notify={notify}
                 selectedRow={selectedTimelineRow}
                 selectRow={selectTimelineRow}
               />
-              {panels.shiftRows.length === 0 && (
+              {shiftPanels.shiftRows.length === 0 && (
                 <Body>
                   No activities have a calculated time on this shift's date yet.
                 </Body>
               )}
-              {(panels.reviewRows.length > 0 ||
-                panels.otherShiftEvents.length > 0) && (
+              {(shiftPanels.reviewRows.length > 0 ||
+                shiftPanels.otherShiftEvents.length > 0) && (
                 <View style={ui.section}>
-                  {panels.reviewRows.length > 0 && (
+                  {shiftPanels.reviewRows.length > 0 && (
                     <Button
                       title="Review tasks with no time or another date"
                       small
@@ -913,7 +931,7 @@ export function Today({
                       onPress={() => navigate("Plan")}
                     />
                   )}
-                  {panels.otherShiftEvents.length > 0 && (
+                  {shiftPanels.otherShiftEvents.length > 0 && (
                     <Button
                       title="View the full shift and sleep plan"
                       small
@@ -925,7 +943,7 @@ export function Today({
               )}
               <Body muted style={{ fontSize: 11 }}>
                 Planned sleep is an opportunity, not measured sleep. Times use{" "}
-                {panels.timezone}.
+                {shiftPanels.timezone}.
               </Body>
             </>
           ) : (
@@ -943,10 +961,10 @@ export function Today({
           )}
         </Card>
       </View>
-      {!!preparation.shiftPlan?.conflicts.length && (
+      {!!planConflicts.length && (
         <Card>
           <Heading small>Plan needs review</Heading>
-          {[...new Set(preparation.shiftPlan.conflicts)].map((conflict) => (
+          {planConflicts.map((conflict) => (
             <Notice error key={conflict}>
               {conflict}
             </Notice>
