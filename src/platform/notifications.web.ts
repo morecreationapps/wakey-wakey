@@ -155,7 +155,7 @@ function status(): NotificationStatus {
         : isIOSWithoutHomeScreen()
           ? "On iPhone or iPad, add this app to the Home Screen, open it there, then enable reminders to receive alerts outside the app."
           : pushSupported()
-            ? "Use Enable opt-in reminders to permit background browser notifications."
+            ? "Use Enable alerts on this device to permit background browser notifications."
             : "This browser supports in-app due alerts while the app is open. Background push is unavailable here.";
   const scheduled = Math.max(pending.length, backgroundStatus?.scheduled ?? 0);
   const through =
@@ -481,7 +481,7 @@ export function testNotification(): Promise<NotificationStatus> {
     if (!enabled || !notificationScopeCurrent(scope))
       return {
         ...status(),
-        message: "Enable opt-in reminders before requesting a test.",
+        message: "Use Enable alerts on this device before requesting a test.",
       };
     if (testTimer) clearTimeout(testTimer);
     testTimer = null;
