@@ -49,6 +49,8 @@ export interface Settings {
   theme: "light" | "dark" | "system";
   remindersEnabled: boolean;
   reminderKinds: string[];
+  /** Versioned opt-in prevents legacy profiles losing newly supported alerts. */
+  reminderCoverageVersion?: 1;
   origins: Record<string, Origin>;
   onboardingStep: number;
   onboardingComplete: boolean;

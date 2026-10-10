@@ -32,7 +32,13 @@ import {
 import { AuthScreens } from "./src/ui/AuthScreens";
 import { AccountConflict } from "./src/ui/AccountConflict";
 import { exportTextFile } from "./src/platform/files";
-import { syncReminders, disableReminders } from "./src/platform/notifications";
+import {
+  syncReminders,
+  disableReminders,
+  subscribeDueAlerts,
+} from "./src/platform/notifications";
+import type { DueAlert } from "./src/platform/reminderEvents";
+import { displayDate, displayTime, localAt } from "./src/engine/time";
 import {
   Theme,
   light,
@@ -111,9 +117,8 @@ export default function App() {
   }, [identity?.id]);
   const logout = async () => {
     clearNotificationOwner();
-    const cancelling = disableReminders();
+    await disableReminders().catch(() => undefined);
     await controller.logout();
-    await cancelling.catch(() => undefined);
   };
   return (
     <SafeAreaProvider>
@@ -152,6 +157,7 @@ function Planner({
     null,
   );
   const [focusedControl, setFocusedControl] = useState("");
+  const [dueAlerts, setDueAlerts] = useState<DueAlert[]>([]);
   const [conflict, setConflict] = useState<AccountConflictReview | null>(null);
   const [recovery, setRecovery] = useState<AccountConflictRecovery | null>(
     null,
@@ -323,7 +329,17 @@ function Planner({
     active.current = true;
     feedback.activate();
     load();
-    const clock = startPlannerClock(() => tick((x) => x + 1));
+    const clock = startPlannerClock(() => {
+      tick((x) => x + 1);
+      // Refresh the rolling native horizon and current foreground web timings.
+      // Only durable planner records can be sent to the notification services.
+      if (durableState.current && active.current)
+        void syncReminders(
+          durableState.current,
+          systemClock,
+          identity.id,
+        ).catch(() => undefined);
+    });
     plannerClock.current = clock;
     const refresh = () => {
       if (typeof document === "undefined" || !document.hidden) clock.refresh();
@@ -342,6 +358,33 @@ function Planner({
         window.removeEventListener("focus", refresh);
     };
   }, []);
+  useEffect(
+    () =>
+      subscribeDueAlerts((alert) => {
+        if (!active.current) return;
+        if (alert.interaction === "opened") {
+          setTab("Today");
+          scroll.current?.scrollTo({ y: 0, animated: false });
+        }
+        setDueAlerts((previous) =>
+          previous.some(
+            (item) =>
+              item.id === alert.id && item.fingerprint === alert.fingerprint,
+          )
+            ? previous
+            : [...previous.filter((item) => item.id !== alert.id), alert].slice(
+                -10,
+              ),
+        );
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (state && !state.settings.remindersEnabled)
+      setDueAlerts((previous) =>
+        previous.filter((item) => item.kind === "test"),
+      );
+  }, [state?.settings.remindersEnabled]);
   useEffect(() => {
     scroll.current?.scrollTo({ y: 0, animated: false });
   }, [state?.settings.onboardingComplete]);
@@ -629,6 +672,75 @@ function Planner({
                   activeTab={tab}
                   onNavigate={navigate}
                 />
+              )}
+              {!!dueAlerts.length && (
+                <View
+                  accessibilityRole="alert"
+                  style={{
+                    position: "absolute",
+                    top: 88,
+                    left: wide ? 240 : 16,
+                    right: 16,
+                    backgroundColor: c.card,
+                    borderColor: c.accent,
+                    borderWidth: 2,
+                    borderRadius: 22,
+                    padding: 18,
+                    gap: 10,
+                    maxWidth: 720,
+                    zIndex: 10,
+                  }}
+                >
+                  <Text
+                    style={{ color: c.ink, fontWeight: "700", fontSize: 19 }}
+                  >
+                    <Icon name="bell" size={19} colour={c.ink} />{" "}
+                    {dueAlerts[0].title}
+                  </Text>
+                  <Text style={{ color: c.ink, fontSize: 14 }}>
+                    {displayDate(
+                      localAt(dueAlerts[0].at, state.settings.timezone).slice(
+                        0,
+                        10,
+                      ),
+                      state.settings.dateFormat,
+                    )}{" "}
+                    ·{" "}
+                    {displayTime(
+                      dueAlerts[0].at,
+                      state.settings.timezone,
+                      state.settings.clockFormat,
+                    )}
+                  </Text>
+                  <Text style={{ color: c.ink, fontSize: 14, lineHeight: 20 }}>
+                    {dueAlerts[0].body}
+                  </Text>
+                  {dueAlerts.length > 1 && (
+                    <Text style={{ color: c.ink }}>
+                      {dueAlerts.length - 1} more due{" "}
+                      {dueAlerts.length === 2 ? "alert" : "alerts"}
+                    </Text>
+                  )}
+                  <View
+                    style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}
+                  >
+                    <Button
+                      title="View plans"
+                      icon="calendar"
+                      onPress={() => {
+                        navigate("Today");
+                        setDueAlerts((previous) => previous.slice(1));
+                      }}
+                    />
+                    <Button
+                      title="Dismiss alert"
+                      secondary
+                      onPress={() =>
+                        setDueAlerts((previous) => previous.slice(1))
+                      }
+                    />
+                  </View>
+                </View>
               )}
               {!!message && (
                 <Pressable

@@ -17,5 +17,6 @@ docs/*.png
 ios/
 android/
 .DS_Store
+supabase/functions/*/deploy/
 assets/wakey-wakey-icon.png
 assets/wakey-wakey-wordmark.png

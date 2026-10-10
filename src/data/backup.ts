@@ -138,6 +138,11 @@ export function validateBackup(value: unknown): AppState {
     bool(settings.onboardingRotaPending, "settings.onboardingRotaPending");
   if (settings.caffeineBeforeBed !== undefined)
     number(settings.caffeineBeforeBed, "settings.caffeineBeforeBed", 2880);
+  if (
+    settings.reminderCoverageVersion !== undefined &&
+    settings.reminderCoverageVersion !== 1
+  )
+    fail("settings.reminderCoverageVersion", "must be 1 when supplied");
   choice(
     settings.dateFormat,
     ["UK", "ISO", "LONG", "LONG_ISO"],
@@ -203,6 +208,8 @@ export function validateBackup(value: unknown): AppState {
           "appointment",
           "transition",
           "caffeine",
+          "activity",
+          "task",
         ],
         `settings.reminderKinds[${index}]`,
       ),

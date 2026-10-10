@@ -50,6 +50,8 @@ const nativeMocks = vi.hoisted(() => ({
       { identifier: string; content: { data: Record<string, unknown> } }[]
     > => [],
   ),
+  getPresentedNotificationsAsync: vi.fn(async () => []),
+  dismissNotificationAsync: vi.fn(async (_id: string) => undefined),
   cancelScheduledNotificationAsync: vi.fn(async (_id: string) => undefined),
   scheduleNotificationAsync: vi.fn(
     async (_request: {
@@ -157,7 +159,7 @@ describe("rolling local reminder intentions and reconciliation", () => {
       ).toContain(expectedDate);
       expect(
         before.find((reminder) => reminder.entryId === "first")?.body,
-      ).toContain("2032-08-10");
+      ).toContain("10/08/2032");
     },
   );
 
@@ -185,7 +187,7 @@ describe("rolling local reminder intentions and reconciliation", () => {
     expect(writtenTransition?.id).toBe(originalTransition?.id);
     expect(writtenTransition?.at).toBe(originalTransition?.at);
     expect(writtenTransition?.body).toContain("Fri 2032 August 13");
-    expect(originalTransition?.body).toContain("2032-08-13");
+    expect(originalTransition?.body).toContain("13/08/2032");
   });
 
   it("G: confirmed leave removes that duty reminders and makes the following actual workday next", async () => {
@@ -254,7 +256,7 @@ describe("rolling local reminder intentions and reconciliation", () => {
       fake.calls.indexOf(`schedule:${departureId}`),
     );
   });
-  it("withholds precise sleep prompts when recovery is unknown, while retaining calculated departure", () => {
+  it("retains valid displayed sleep prompts when unrelated recovery inputs are missing", () => {
     const original = state();
     const records = desiredReminders(
       {
@@ -272,7 +274,7 @@ describe("rolling local reminder intentions and reconciliation", () => {
       records.some((record) =>
         ["wake", "bedtime", "windDown"].includes(record.kind),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
   it("withholds unsafe sleep prompts for an infeasible late-to-early turnaround", () => {
     const original = state();
@@ -378,8 +380,8 @@ describe("rolling local reminder intentions and reconciliation", () => {
       title: "Booked haircut",
       kind: "fixed",
       minutes: 30,
-      earliest: "2032-08-10T15:00",
-      deadline: "2032-08-10T16:00",
+      earliest: "2032-08-10T16:00",
+      deadline: "2032-08-10T17:00",
       windowStart: "09:00",
       windowEnd: "17:00",
       priority: 1,
@@ -389,7 +391,7 @@ describe("rolling local reminder intentions and reconciliation", () => {
       movable: false,
       splittable: false,
       locked: true,
-      scheduledStart: "2032-08-10T15:00",
+      scheduledStart: "2032-08-10T16:00",
       state: "accepted",
     };
     original.tasks.push(task);
@@ -397,9 +399,9 @@ describe("rolling local reminder intentions and reconciliation", () => {
       (record) => record.kind === "appointment",
     );
     expect(appointment?.at).toBe(
-      zonedEpoch("2032-08-10T14:45", "Europe/London"),
+      zonedEpoch("2032-08-10T15:45", "Europe/London"),
     );
-    expect(original.tasks[0].scheduledStart).toBe("2032-08-10T15:00");
+    expect(original.tasks[0].scheduledStart).toBe("2032-08-10T16:00");
   });
   it("distinguishes ordinary waking reminders and fingerprints an altered event", () => {
     const record = desiredReminders(state(), clock).find(
@@ -487,9 +489,7 @@ describe("recurring appointment completion", () => {
       },
     };
     await reconcileReminders(fake.adapter, desiredReminders(original, clock));
-    expect([...fake.rows.keys()]).toEqual([
-      "wakey:appointment:daily:2032-08-13",
-    ]);
+    expect([...fake.rows.keys()]).toEqual(["wakey:task:daily:2032-08-13"]);
     expect(original.tasks[0].state).toBe("accepted");
   });
 });

@@ -54,6 +54,7 @@ export function newSettings(): Settings {
     freeMinutes: 120,
     theme: "system",
     remindersEnabled: false,
+    reminderCoverageVersion: 1,
     reminderKinds: [
       "prepare",
       "windDown",
@@ -62,6 +63,8 @@ export function newSettings(): Settings {
       "departure",
       "appointment",
       "transition",
+      "activity",
+      "task",
     ],
     origins: {
       freeMinutes: "suggested",

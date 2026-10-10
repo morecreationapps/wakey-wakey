@@ -46,6 +46,7 @@
     "@electric-sql/pglite": "0.5.8",
     "@types/node": "24.10.0",
     "@types/react": "~19.2.2",
+    "esbuild": "0.25.12",
     "prettier": "^3.9.9",
     "typescript": "~6.0.3",
     "vitest": "^4.1.0"

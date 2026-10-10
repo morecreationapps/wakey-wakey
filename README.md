@@ -31,13 +31,13 @@ Follow [the authentication backend and migration guide](docs/auth-backend.md) be
 
 ## What it does
 
-- **Today:** next actual duty and preparation checklist; **Shift transition** schedules tasks and the bedtime routine for the previous calendar day; **Shift Plan** retains the existing sleep, preparation, departure and arrival calculations for that duty.
+- **Today:** next actual duty and preparation checklist; **Shift Transition** schedules tasks and the bedtime routine for the previous calendar day; **Shift Plan** retains the existing sleep, preparation, departure and arrival calculations for that duty.
 - **Rota:** day/week/month/year views, editable duties and templates, 52-week patterns, week copying, exceptions and Undo. Rest, unknown dates, requested leave and confirmed leave stay distinct. Overnight work, overtime and actual finish times are separate inputs.
 - **Plan:** fixed appointments and essential/flexible/optional tasks, deadlines, windows, travel, recurrence, locks, splitting and per-occurrence completion or skipping.
 - **Sleep:** planned opportunities, conflict/missing-input explanations, optional self-reported diary and educational NHS/HSE links. The app does not measure sleep or supply specialist night-shift coaching.
 - **Settings:** saved onboarding, light/dark/system themes, account/logout controls, reviewed text/CSV imports, CSV/iCalendar export and validated JSON backup/restore.
 
-Native iOS/Android adapters use SQLite and optional local notifications. Browser notifications are explicitly unsupported. Wake-up notifications are ordinary reminders; use a separate phone alarm. Local permission, file sharing and delivery need real-device checks before a mobile release.
+Native iOS/Android adapters use SQLite and opt-in local notifications. The website and home-screen web app provide in-app due alerts plus server Web Push on supported, permitted installations. Alerts follow Shift Transition, Shift Plan and individual tasks. See [the alerts guide](docs/ALERTS.md) for enabling, testing, platform limits and backend deployment. Wake-up notifications are ordinary reminders; use a separate phone alarm. Physical-device delivery and closed-browser/home-screen push checks remain release gates.
 
 ## Build and verify
 
@@ -61,4 +61,4 @@ Rota, settings, templates, patterns, tasks and diary records belong to the authe
 
 Browser storage belongs to the site's origin and browser profile. GitHub project sites on the same `github.io` host share an origin; repository paths and account-prefixed cache keys do not isolate storage from other code on that host. Clearing browser data or using private browsing can remove device copies. Logout hides the planner, isolates account views and cancels account reminders without deleting saved planner records. Legacy localhost data is eligible for transfer only through the trusted administrator reservation/binding and verified one-time migration described in the backend guide; new accounts never inherit it.
 
-Offline planner access is limited to a previously validated, still-valid password session in the running app and that account's device cache. Cold offline sign-in/session restoration is not an authentication bypass. The browser has no service worker for guaranteed offline cold starts and needs hosted assets to load. Task placement is a conservative greedy heuristic with a 14-day horizon. Photo/PDF/OCR import, calendar synchronisation, widgets, wearable integration and reliable OS alarms are deferred. See the implementation notes for the remaining release checks.
+Offline planner access is limited to a previously validated, still-valid password session in the running app and that account's device cache. Cold offline sign-in/session restoration is not an authentication bypass. The browser's notification service worker does not cache planner pages or guarantee offline cold starts; hosted assets still need to load. Task placement is a conservative greedy heuristic with a 14-day horizon. Photo/PDF/OCR import, calendar synchronisation, widgets, wearable integration and reliable OS alarms are deferred. See the implementation notes for the remaining release checks.

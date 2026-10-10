@@ -25,6 +25,17 @@ let previousExpandedChoiceError: string | undefined;
 let previousWrittenISOChoiceError: string | undefined;
 const snapshot = (name: string) => {
   const state = initialState();
+  // This fixture audits the pre-alert validator and its preference migrations.
+  state.settings.reminderKinds = [
+    "prepare",
+    "windDown",
+    "bedtime",
+    "wake",
+    "departure",
+    "appointment",
+    "transition",
+  ];
+  delete state.settings.reminderCoverageVersion;
   state.settings.name = name;
   state.settings.routines = [
     {
@@ -188,7 +199,14 @@ describe("executed PostgreSQL account security", () => {
     `);
     const directory = new URL("../supabase/migrations/", import.meta.url);
     const files = (await readdir(directory))
-      .filter((file) => file.endsWith(".sql"))
+      // Planning-alert extension interfaces and permissions execute in the
+      // dedicated reminderBackendSql fixture; retain this legacy validator audit.
+      .filter(
+        (file) =>
+          file.endsWith(".sql") &&
+          !file.endsWith("_planning_alerts.sql") &&
+          !file.endsWith("_alert_dispatch_timeout.sql"),
+      )
       .sort();
     for (const file of files) {
       const sql = await readFile(new URL(file, directory), "utf8");

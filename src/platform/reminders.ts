@@ -1,18 +1,41 @@
-import { AppState, Clock, ReminderRecord } from "../model";
-import { planShift, transitions } from "../engine/planner";
+import {
+  AppState,
+  Clock,
+  ReminderRecord,
+  RotaEntry,
+  Settings,
+  Task,
+} from "../model";
+import { planShift, transitions, workBounds } from "../engine/planner";
+import { panelRollover } from "../engine/panelRollover";
+import {
+  planPreparation,
+  PreparationPlan,
+  PreparationRow,
+} from "../engine/preparation";
+import { shiftDayPanels } from "../engine/shiftDayPanels";
 import {
   addDays,
+  dateInZone,
   displayDate,
-  isWrittenDateFormat,
   localAt,
+  MINUTE,
+  onDate,
   zonedEpoch,
 } from "../engine/time";
 
 export const REMINDER_PREFIX = "wakey:";
 export const REMINDER_HORIZON_DAYS = 14;
 export const MAX_REMINDERS = 60;
+export const MAX_WEB_REMINDERS = 1000;
 const DAY = 86_400_000;
-const sleepKinds = new Set(["windDown", "bedtime", "wake", "caffeine"]);
+const sleepKinds = new Set([
+  "windDown",
+  "bedtime",
+  "sleepStart",
+  "wake",
+  "caffeine",
+]);
 const supportedKinds = new Set([
   "prepare",
   "windDown",
@@ -22,90 +45,313 @@ const supportedKinds = new Set([
   "appointment",
   "transition",
   "caffeine",
+  "activity",
+  "task",
 ]);
+const inactive = (state: string) =>
+  ["completed", "skipped", "deferred", "conflict", "needs-input"].includes(
+    state,
+  );
+function boundedReminderId(id: string): string {
+  if (id.length <= 200) return id;
+  let hash = 14695981039346656037n;
+  for (const character of id) {
+    hash = BigInt.asUintN(
+      64,
+      (hash ^ BigInt(character.codePointAt(0)!)) * 1099511628211n,
+    );
+  }
+  return `wakey:long:${hash.toString(16).padStart(16, "0")}`;
+}
 
-/** Deterministic notification intentions; never reads the device timezone or permissions. */
+/** A recorded event keeps its specific kind; this chooses its settings switch. */
+export function reminderKindSetting(kind: string): string {
+  return supportedKinds.has(kind) ? kind : "activity";
+}
+
+/** Upgrade only an already opted-in legacy profile, preserving old switches.
+ * Version 1 makes an intentional activity/task opt-out distinguishable from a
+ * profile saved before those notification types existed. */
+export function upgradeReminderCoverage(settings: Settings): Settings {
+  if (!settings.remindersEnabled || settings.reminderCoverageVersion === 1)
+    return settings;
+  return {
+    ...settings,
+    reminderCoverageVersion: 1,
+    reminderKinds: [
+      ...new Set([...settings.reminderKinds, "activity", "task"]),
+    ],
+  };
+}
+
+/** Deterministic due alerts for the dated activities displayed by the panels.
+ * Calendar sampling uses the same independent references as Today, so a duty
+ * remains eligible after work starts and a new shift block owns its day-before
+ * routine. No task, placement, setting or saved planner record is changed.
+ */
 export function desiredReminders(
   state: AppState,
   clock: Clock,
+  options: { max?: number; horizonDays?: number } = {},
 ): ReminderRecord[] {
-  const settings = state.settings;
+  const settings = upgradeReminderCoverage(state.settings);
   if (
     !settings.remindersEnabled ||
     !settings.onboardingComplete ||
     !settings.timezoneConfirmed
   )
     return [];
-  const now = clock.now();
-  const through = now + REMINDER_HORIZON_DAYS * DAY;
+  const horizonDays = Number.isFinite(options.horizonDays)
+    ? Math.max(
+        1,
+        Math.min(REMINDER_HORIZON_DAYS, Math.floor(options.horizonDays!)),
+      )
+    : REMINDER_HORIZON_DAYS;
+  const now = clock.now(),
+    through = now + horizonDays * DAY;
+  const firstDate = dateInZone({ now: () => now }, settings.timezone),
+    lastDate = addDays(
+      dateInZone({ now: () => through }, settings.timezone),
+      2,
+    ),
+    planningLastDate = addDays(
+      dateInZone(
+        { now: () => now + REMINDER_HORIZON_DAYS * DAY },
+        settings.timezone,
+      ),
+      2,
+    );
   const enabled = new Set(
     settings.reminderKinds.filter((kind) => supportedKinds.has(kind)),
   );
   const result = new Map<string, ReminderRecord>();
   const add = (record: ReminderRecord) => {
     if (
-      enabled.has(record.kind) &&
+      enabled.has(reminderKindSetting(record.kind)) &&
       Number.isFinite(record.at) &&
       record.at > now &&
       record.at <= through
     )
-      result.set(record.id, record);
+      result.set(boundedReminderId(record.id), {
+        ...record,
+        // Push payloads have a small byte limit; both platforms use the same
+        // bounded preview and fingerprint. Full task text remains in the app.
+        title:
+          record.title.length > 120
+            ? record.title.slice(0, 119) + "…"
+            : record.title,
+        body:
+          record.body.length > 240
+            ? record.body.slice(0, 239) + "…"
+            : record.body,
+        id: boundedReminderId(record.id),
+        kind: record.kind.length > 50 ? "activity" : record.kind,
+      });
   };
-  for (const entry of state.entries) {
-    if (entry.status !== "Work" || !entry.start) continue;
-    try {
-      const start = zonedEpoch(
-        entry.start,
-        entry.timezone,
-        entry.disambiguation,
-      );
-      if (start <= now || start > through + DAY) continue;
-    } catch {
-      continue;
+  const reference = new Map<
+    string,
+    {
+      entry: RotaEntry;
+      shift: boolean;
+      transition: boolean;
     }
-    const plan = planShift(entry, settings, state.entries, state.tasks);
-    // Missing recovery, ambiguous local times or a sleep conflict cannot become precise sleep prompts.
-    const safeSleep = !plan.provisional && plan.conflicts.length === 0;
-    for (const event of plan.events) {
-      if (!enabled.has(event.kind)) continue;
-      if (sleepKinds.has(event.kind) && !safeSleep) continue;
-      if (event.kind === "caffeine" && !settings.caffeine) continue;
+  >();
+  const choose = (
+    entry: RotaEntry | undefined,
+    kind: "shift" | "transition",
+  ) => {
+    if (!entry || entry.date > lastDate) return;
+    const item = reference.get(entry.id) ?? {
+      entry,
+      shift: false,
+      transition: false,
+    };
+    item[kind] = true;
+    reference.set(entry.id, item);
+  };
+  const sample = (at: number) => {
+    const panels = panelRollover(state.entries, settings, { now: () => at });
+    choose(panels.shiftPlanShift, "shift");
+    choose(panels.transitionShift, "transition");
+  };
+  sample(now);
+  // Midnight rollover must not cancel the remaining finish/return alerts of
+  // an overnight duty that is still in progress from the previous date.
+  for (const entry of state.entries) {
+    try {
+      const bounds = workBounds(entry);
+      if (bounds && bounds.start <= now && bounds.end > now)
+        choose(entry, "shift");
+    } catch {
+      /* Unresolved duty times cannot establish exact notifications. */
+    }
+  }
+  for (let day = 0; day <= horizonDays; day++) {
+    // Noon represents the calendar date after the 00:01 rollover, and avoids
+    // assuming that every timezone has a valid midnight or a 24-hour day.
+    try {
+      sample(onDate(addDays(firstDate, day), "12:00", settings.timezone));
+    } catch {
+      /* A skipped local date has no panel activities to deliver. */
+    }
+  }
+  const savedTasks = new Map(state.tasks.map((task) => [task.id, task]));
+  // Distant work cannot occupy this bounded notification horizon. Retain
+  // preceding dates for recovery calculations and the closest older duty as
+  // context, rather than replanning every day of a year-long rota per panel.
+  const earliestDate = addDays(firstDate, -3);
+  const older = state.entries
+    .filter((entry) => entry.date < earliestDate)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .find((entry) => entry.status === "Work");
+  const planningEntries = state.entries.filter(
+    (entry) => entry.date >= earliestDate && entry.date <= planningLastDate,
+  );
+  if (older) planningEntries.push(older);
+  const reviewedFixed = new Set<string>();
+  const occurrenceKey = (taskId: string, date?: string) =>
+    `${taskId}:${date ?? "once"}`;
+  const taskIdentifier = (row: PreparationRow) => {
+    const part = row.id.match(/:part:(\d+)$/)?.[1];
+    return `${REMINDER_PREFIX}task:${encodeURIComponent(row.taskId!)}${row.occurrenceDate ? `:${row.occurrenceDate}` : ""}${part ? `:part:${part}` : ""}`;
+  };
+  const dateText = (date: string) => displayDate(date, settings.dateFormat);
+  const fixedLead = (task: Task, date: string | undefined, at: number) => {
+    if (!(task.travelMinutes > 0)) return;
+    add({
+      id: `${REMINDER_PREFIX}appointment:${encodeURIComponent(task.id)}${date ? `:${date}` : ""}`,
+      at: at - task.travelMinutes * MINUTE,
+      title: "Leave for appointment",
+      body: `${task.title}. Allow ${task.travelMinutes} minutes for travel.`,
+      kind: "appointment",
+      ...(task.linkedShiftId ? { entryId: task.linkedShiftId } : {}),
+    });
+  };
+  for (const { entry, shift, transition } of reference.values()) {
+    const plan = planShift(entry, settings, planningEntries, state.tasks);
+    const shiftDate = entry.start ? entry.start.slice(0, 10) : entry.date,
+      preparationDate = addDays(shiftDate, -1);
+    const hasPanelTasks = state.tasks.some((task) => {
+      if (task.linkedShiftId) return task.linkedShiftId === entry.id;
+      // Task bounds are stored in the settings timezone; in a different duty
+      // timezone a neighbouring local date may fall inside this panel's day.
+      if (entry.timezone !== settings.timezone) return true;
+      // Even completed tasks must be projected when they can replace a
+      // canonical row, so completion still suppresses a merged bedtime alert.
+      // Untimed/deferred suggestions whose bounds include either date need the
+      // full scheduler; tasks entirely outside both dates cannot appear here.
+      const dates = [task.earliest, task.deadline, task.scheduledStart]
+        .filter((value): value is string => !!value)
+        .map((value) => value.slice(0, 10));
+      return (
+        dates.some((date) => date >= preparationDate && date <= shiftDate) ||
+        (task.earliest.slice(0, 10) < preparationDate &&
+          task.deadline.slice(0, 10) > shiftDate)
+      );
+    });
+    const preparation: PreparationPlan = hasPanelTasks
+      ? planPreparation(
+          planningEntries,
+          state.tasks,
+          settings,
+          { now: () => now },
+          {
+            selectedShift: entry,
+            shiftPlan: plan,
+          },
+        )
+      : {
+          today: firstDate,
+          todayStatus: "Unknown",
+          nextShift: entry,
+          preparationDate,
+          shiftPlan: plan,
+          preparesFor: "later",
+          rows: [],
+          placements: [],
+          missing: plan.missing,
+          conflicts: plan.conflicts,
+          provisional: plan.provisional,
+        };
+    const panels = shiftDayPanels(preparation, state.tasks, settings);
+    if (!panels.shiftDate) continue;
+    const rows = [
+      ...(shift ? panels.shiftRows : []),
+      ...(transition ? panels.transitionRows : []),
+      // An overnight finish/return is still an activity for that selected duty,
+      // even when its instant falls beyond the duty's starting calendar date.
+      ...(shift
+        ? panels.otherShiftEvents.filter(
+            (row) =>
+              row.at !== null &&
+              localAt(row.at, panels.timezone).slice(0, 10) > panels.shiftDate!,
+          )
+        : []),
+    ];
+    for (const row of rows) {
+      const task = row.taskId ? savedTasks.get(row.taskId) : undefined;
+      const fixed = task?.kind === "fixed";
+      if (fixed) reviewedFixed.add(occurrenceKey(task.id, row.occurrenceDate));
+      if (
+        row.at === null ||
+        !Number.isFinite(row.at) ||
+        row.conflict ||
+        inactive(row.status)
+      )
+        continue;
+      if (
+        task &&
+        inactive(
+          task.occurrenceStates?.[row.occurrenceDate ?? ""] ?? task.state,
+        )
+      )
+        continue;
+      const canonical = row.id.startsWith("shift-event:");
+      // A concrete displayed time remains eligible when unrelated inputs are
+      // missing. An actual sleep conflict still withholds its affected prompts.
+      if (
+        canonical &&
+        sleepKinds.has(row.kind) &&
+        preparation.shiftPlan?.conflicts.length
+      )
+        continue;
+      if (row.kind === "caffeine" && !settings.caffeine) continue;
+      const kind = canonical ? row.kind : fixed ? "appointment" : "task";
       const wakeAdvice =
-        event.kind === "wake"
+        row.kind === "wake"
           ? " Wake-up reminder only: use a separate phone alarm."
           : "";
       add({
-        id: `${REMINDER_PREFIX}duty:${encodeURIComponent(entry.id)}:${event.kind}`,
-        at: event.at,
-        title: event.kind === "wake" ? "Wake-up reminder" : event.label,
-        body: `${entry.category} duty on ${isWrittenDateFormat(settings.dateFormat) ? displayDate(entry.date, settings.dateFormat) : entry.date}. ${event.why}${wakeAdvice}`,
-        kind: event.kind,
+        id: canonical
+          ? `${REMINDER_PREFIX}duty:${encodeURIComponent(entry.id)}:${row.kind}`
+          : taskIdentifier(row),
+        at: row.at,
+        title: row.kind === "wake" ? "Wake-up reminder" : row.label,
+        body: `${dateText(localAt(row.at, panels.timezone).slice(0, 10))}. ${task ? "Your planned task is due." : `${entry.category} duty on ${dateText(panels.shiftDate)}.`}${wakeAdvice}`,
+        kind,
         entryId: entry.id,
       });
+      if (fixed) fixedLead(task, row.occurrenceDate, row.at);
     }
   }
+  // Retain recorded fixed appointments even on days with no selected work panel.
+  // Panel-reviewed conflicts/completions are withheld instead of reintroduced.
   if (enabled.has("appointment")) {
     for (const task of state.tasks) {
+      if (task.kind !== "fixed" || inactive(task.state)) continue;
       if (
-        task.kind !== "fixed" ||
-        ["completed", "skipped", "deferred"].includes(task.state)
+        task.linkedShiftId &&
+        !state.entries.some(
+          (entry) => entry.id === task.linkedShiftId && entry.status === "Work",
+        )
       )
         continue;
       try {
-        const chosen = task.scheduledStart ?? task.earliest;
-        const deadline = zonedEpoch(task.deadline, settings.timezone);
-        if (task.recurrence === "none") {
-          add({
-            id: `${REMINDER_PREFIX}appointment:${encodeURIComponent(task.id)}`,
-            at:
-              zonedEpoch(chosen, settings.timezone) -
-              task.travelMinutes * 60_000,
-            title: "Appointment reminder",
-            body: `${task.title}. ${task.travelMinutes ? `Allow ${task.travelMinutes} minutes for travel.` : "Your recorded appointment time."}`,
-            kind: "appointment",
-          });
-        } else {
-          // Expand only recorded recurrence, preserving the entered wall-clock appointment time across DST.
+        const chosen = task.scheduledStart ?? task.earliest,
+          deadline = zonedEpoch(task.deadline, settings.timezone);
+        const dates: (string | undefined)[] = [];
+        if (task.recurrence === "none") dates.push(undefined);
+        else {
           const lastDate = localAt(
             Math.min(deadline, through + DAY),
             settings.timezone,
@@ -114,47 +360,51 @@ export function desiredReminders(
             let date = task.earliest.slice(0, 10);
             date <= lastDate;
             date = addDays(date, task.recurrence === "daily" ? 1 : 7)
-          ) {
-            if (
-              ["completed", "skipped", "deferred"].includes(
-                task.occurrenceStates?.[date] ?? "pending",
-              )
+          )
+            dates.push(date);
+        }
+        for (const date of dates) {
+          if (
+            reviewedFixed.has(occurrenceKey(task.id, date)) ||
+            inactive(
+              date ? (task.occurrenceStates?.[date] ?? "pending") : task.state,
             )
-              continue;
-            try {
-              const at = zonedEpoch(
-                `${date}T${chosen.slice(11, 16)}`,
-                settings.timezone,
-              );
-              if (at > deadline) continue;
-              add({
-                id: `${REMINDER_PREFIX}appointment:${encodeURIComponent(task.id)}:${date}`,
-                at: at - task.travelMinutes * 60_000,
-                title: "Appointment reminder",
-                body: `${task.title}. Recorded ${task.recurrence} appointment; allow ${task.travelMinutes} minutes for travel.`,
-                kind: "appointment",
-              });
-            } catch {
-              /* Withhold only the unresolved DST occurrence, not later valid appointments. */
-            }
+          )
+            continue;
+          try {
+            const at = zonedEpoch(
+              date ? `${date}T${chosen.slice(11, 16)}` : chosen,
+              settings.timezone,
+            );
+            if (at > deadline) continue;
+            add({
+              id: `${REMINDER_PREFIX}task:${encodeURIComponent(task.id)}${date ? `:${date}` : ""}`,
+              at,
+              title: task.title,
+              body: `${dateText(localAt(at, settings.timezone).slice(0, 10))}. Your recorded appointment is due.`,
+              kind: "appointment",
+              ...(task.linkedShiftId ? { entryId: task.linkedShiftId } : {}),
+            });
+            fixedLead(task, date, at);
+          } catch {
+            /* Withhold only an unresolved DST occurrence. */
           }
         }
       } catch {
-        /* Invalid or ambiguous user-entered appointment time stays visible for review in the planner. */
+        /* Invalid recorded appointments remain available for review. */
       }
     }
   }
   if (enabled.has("transition")) {
     for (const change of transitions(state.entries, settings, clock)) {
       try {
-        // A noon planning review, never a bedtime or body-clock prescription.
         const reviewDate =
           change.adjustmentDates[0] ?? addDays(change.nextDate, -1);
         add({
           id: `${REMINDER_PREFIX}transition:${encodeURIComponent(change.id)}`,
           at: zonedEpoch(`${reviewDate}T12:00`, settings.timezone),
           title: "Review your upcoming shift change",
-          body: `${change.to} duties start on ${isWrittenDateFormat(settings.dateFormat) ? displayDate(change.nextDate, settings.dateFormat) : change.nextDate}. ${change.provisional ? "Some information is still needed; review the provisional plan." : "Review preparation tasks and the transition plan."}`,
+          body: `${change.to} duties start on ${dateText(change.nextDate)}. Review preparation tasks and the transition plan.`,
           kind: "transition",
         });
       } catch {
@@ -164,7 +414,12 @@ export function desiredReminders(
   }
   return [...result.values()]
     .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
-    .slice(0, MAX_REMINDERS);
+    .slice(
+      0,
+      Number.isFinite(options.max)
+        ? Math.max(0, Math.min(MAX_WEB_REMINDERS, Math.floor(options.max!)))
+        : MAX_REMINDERS,
+    );
 }
 
 export interface ScheduledReminder {
@@ -258,4 +513,4 @@ export function permissionDescription(permission: {
   };
 }
 export const ALARM_LIMITATION =
-  "Wake-up reminders are ordinary notifications. Use a separate phone alarm. Silent mode, Focus/Do Not Disturb, battery restrictions and OS delivery may prevent an alert. Reopen the app to refresh the next 14 days; at most 60 reminders are queued.";
+  "Wake-up reminders are ordinary notifications. Use a separate phone alarm. Silent mode, Focus/Do Not Disturb, battery restrictions and OS delivery may prevent an alert.";

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View } from "react-native";
+import { Platform, View } from "react-native";
 import {
   ScreenProps,
   Card,
@@ -21,7 +21,10 @@ import {
   testNotification,
   disableReminders,
 } from "../platform/notifications";
-import { NotificationStatus } from "../platform/reminders";
+import {
+  NotificationStatus,
+  upgradeReminderCoverage,
+} from "../platform/reminders";
 import { exportBackup, parseBackup } from "../data/backup";
 import { pickTextFile, exportTextFile } from "../platform/files";
 
@@ -54,6 +57,10 @@ export function SettingsScreen({
     [restore, setRestore] = useState<AppState | null>(null),
     [deleteConfirm, setDeleteConfirm] = useState(false);
   const s = state.settings;
+  const reminderSettings = {
+    ...upgradeReminderCoverage({ ...s, remindersEnabled: true }),
+    remindersEnabled: s.remindersEnabled,
+  };
   const refresh = () =>
     notificationStatus()
       .then(setStatus)
@@ -112,6 +119,7 @@ export function SettingsScreen({
         <Heading small>Reminders & permissions</Heading>
         <Row>
           <Pill text={status?.permission ?? "Checking permission"} />
+          <Pill text={s.remindersEnabled ? "Alerts enabled" : "Alerts off"} />
           <Pill text={`${status?.scheduled ?? 0} scheduled`} />
         </Row>
         <Body muted>{status?.message}</Body>
@@ -121,8 +129,14 @@ export function SettingsScreen({
           or permissions. Use a separate phone alarm.
         </Body>
         <Body muted>
-          Rolling horizon: up to 14 days, at most 60 notifications. Open the app
-          to refresh. Background renewal is not guaranteed.
+          Alerts use the dates and times in Shift Transition and Shift Plan,
+          including individual tasks. Editing, completing or deleting an item
+          updates its alerts after the change is saved.
+        </Body>
+        <Body muted>
+          {Platform.OS === "web"
+            ? "In-app alerts appear while this page is open. To receive system notifications with the app closed, enable notifications on this browser or home-screen app. On iPhone/iPad, add the app to your Home Screen first (iOS/iPadOS 16.4 or later), open it there and enable alerts. The server checks due alerts every minute; network and device settings can delay delivery. Reopen this app at least once every 30 days to keep background alerts active on this device."
+            : "In-app alerts appear while this app is open. With notification permission, this device schedules up to 60 system alerts for the next 14 days. Open the app to refresh that rolling schedule. Alerts already scheduled can arrive while the app is closed. Edits made on another device take effect here when this app next synchronises."}
         </Body>
         {!!status?.through && (
           <Body>
@@ -135,23 +149,28 @@ export function SettingsScreen({
           </Body>
         )}
         <Button
-          title="Enable opt-in reminders"
+          title="Enable alerts on this device"
           icon="bell"
           onPress={async () => {
             try {
               const p = await requestReminders();
               setStatus(p);
-              if (
-                p.supported &&
-                ["granted", "provisional", "ephemeral"].includes(p.permission)
-              ) {
+              if (p.supported) {
                 const next = {
                   ...state,
-                  settings: { ...s, remindersEnabled: true },
+                  settings: {
+                    ...upgradeReminderCoverage({
+                      ...s,
+                      remindersEnabled: true,
+                    }),
+                    reminderCoverageVersion: 1 as const,
+                  },
                 };
                 change(() => next);
                 notify(
-                  "Reminders enabled. The schedule refreshes after your setup is saved.",
+                  ["granted", "provisional", "ephemeral"].includes(p.permission)
+                    ? "Alerts enabled. The schedule refreshes after your settings are saved."
+                    : "In-app alerts enabled while the app is open. System notifications need permission on this device. The schedule refreshes after your settings are saved.",
                 );
               } else notify(p.message);
             } catch (e) {
@@ -169,26 +188,54 @@ export function SettingsScreen({
           "appointment",
           "transition",
           "caffeine",
+          "activity",
+          "task",
         ].map((kind) => (
           <Toggle
             key={kind}
             label={
-              kind === "wake"
-                ? "Wake-up reminder"
-                : kind === "windDown"
-                  ? "Begin wind-down"
-                  : kind[0].toUpperCase() + kind.slice(1)
+              kind === "activity"
+                ? "Other Shift Plan activities (arrival, work, finish and sleep start)"
+                : kind === "task"
+                  ? "Individual preparation tasks"
+                  : kind === "transition"
+                    ? "Upcoming shift change review"
+                    : kind === "caffeine"
+                      ? "Consider avoiding caffeine"
+                      : kind === "appointment"
+                        ? "Appointments and appointment travel"
+                        : kind === "wake"
+                          ? "Wake-up reminder"
+                          : kind === "windDown"
+                            ? "Begin wind-down"
+                            : kind[0].toUpperCase() + kind.slice(1)
             }
-            value={s.reminderKinds.includes(kind)}
+            value={reminderSettings.reminderKinds.includes(kind)}
             onChange={(v) =>
               change((a) => ({
                 ...a,
                 settings: {
-                  ...a.settings,
+                  ...upgradeReminderCoverage({
+                    ...a.settings,
+                    remindersEnabled: true,
+                  }),
+                  remindersEnabled: a.settings.remindersEnabled,
+                  reminderCoverageVersion: 1,
                   ...(kind === "caffeine" ? { caffeine: v } : {}),
                   reminderKinds: v
-                    ? [...new Set([...a.settings.reminderKinds, kind])]
-                    : a.settings.reminderKinds.filter((k) => k !== kind),
+                    ? [
+                        ...new Set([
+                          ...upgradeReminderCoverage({
+                            ...a.settings,
+                            remindersEnabled: true,
+                          }).reminderKinds,
+                          kind,
+                        ]),
+                      ]
+                    : upgradeReminderCoverage({
+                        ...a.settings,
+                        remindersEnabled: true,
+                      }).reminderKinds.filter((k) => k !== kind),
                 },
               }))
             }
