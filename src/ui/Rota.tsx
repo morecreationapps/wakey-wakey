@@ -147,6 +147,16 @@ export function Rota({ state, change, notify }: ScreenProps) {
       ? first.add({ months: i }).toString()
       : first.add({ days: i }).toString(),
   );
+  const columns = view === "Year" ? 3 : view === "Day" ? 1 : 7;
+  const leadingDays = view === "Month" ? weekdayOffset(first, s.firstDay) : 0;
+  const calendarCells = Array.from(
+    { length: Math.ceil((leadingDays + dates.length) / columns) * columns },
+    (_, index) => dates[index - leadingDays] ?? null,
+  );
+  const calendarRows = Array.from(
+    { length: calendarCells.length / columns },
+    (_, index) => calendarCells.slice(index * columns, (index + 1) * columns),
+  );
   const selected = state.entries.filter((e) => e.date === anchor);
   const shiftDays = (amount: number) =>
     setAnchor(
@@ -308,12 +318,17 @@ export function Rota({ state, change, notify }: ScreenProps) {
           <Pill text={s.timezone} />
         </Row>
         {view === "Month" && (
-          <Row>
+          <View
+            testID="rota-weekday-row"
+            style={{ flexDirection: "row", gap: 5 }}
+          >
             {weekdayLabels(s.firstDay).map((x) => (
               <Text
                 key={x}
+                numberOfLines={1}
                 style={{
-                  width: "12.9%",
+                  flex: 1,
+                  minWidth: 0,
                   textAlign: "center",
                   fontSize: 11,
                   color: c.muted,
@@ -322,100 +337,130 @@ export function Rota({ state, change, notify }: ScreenProps) {
                 {x}
               </Text>
             ))}
-          </Row>
+          </View>
         )}
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
-          {view === "Month" &&
-            Array.from(
-              {
-                length: weekdayOffset(first, s.firstDay),
-              },
-              (_, i) => <View key={"empty" + i} style={{ width: "13.3%" }} />,
-            )}
-          {dates.map((date) => {
-            const list = state.entries.filter((e) =>
-              view === "Year"
-                ? e.date.startsWith(date.slice(0, 7))
-                : e.date === date,
-            );
-            const entry = list[0];
-            return (
-              <Pressable
-                key={date}
-                accessibilityRole="button"
-                accessibilityState={{ selected: date === anchor }}
-                accessibilityLabel={`${displayDate(date, s.dateFormat)} ${entry ? statusLabel(entry.status) + " " + entry.duty : "Unknown"}`}
-                onFocus={() => setFocusedDate(date)}
-                onBlur={() => setFocusedDate(null)}
-                onPress={() => {
-                  setAnchor(date);
-                  if (view === "Year") setView("Month");
-                }}
-                style={({ pressed }) => ({
-                  width:
-                    view === "Year"
-                      ? "31.5%"
-                      : view === "Day"
-                        ? "100%"
-                        : "13.3%",
-                  minHeight: view === "Year" ? 85 : 78,
-                  backgroundColor: c.accent,
-                  borderWidth: 1,
-                  borderColor:
-                    date === anchor || pressed ? c.onAccent : c.accent,
-                  borderRadius: 12,
-                  padding: 8,
-                  gap: 5,
-                  outlineColor: c.onAccent,
-                  outlineWidth: focusedDate === date || pressed ? 2 : 0,
-                  outlineStyle: "solid",
-                  outlineOffset: -4,
-                  transform: [{ translateY: pressed ? 1 : 0 }],
-                })}
-              >
-                <Text
-                  style={{
-                    color: c.onAccent,
-                    fontSize: 14,
-                    fontWeight: date === anchor ? "700" : "500",
-                    textDecorationLine: date === anchor ? "underline" : "none",
-                  }}
-                >
-                  {view === "Year"
-                    ? new Intl.DateTimeFormat("en-GB", {
-                        month: "short",
-                        timeZone: "UTC",
-                      }).format(new Date(date + "T12:00:00Z"))
-                    : Temporal.PlainDate.from(date).day}
-                </Text>
-                <Text
-                  numberOfLines={2}
-                  style={{
-                    color: c.onAccent,
-                    fontSize: 10,
-                    fontWeight: "600",
-                  }}
-                >
-                  {view === "Year"
-                    ? `${list.filter((e) => e.status === "Work").length} duties`
-                    : entry?.status === "Work"
-                      ? `${entry.category[0]} · ${entry.duty || "Work"}`
-                      : entry
-                        ? entry.status === "Holiday"
-                          ? entry.leaveApproval !== "confirmed"
-                            ? "Leave?"
-                            : "Leave"
-                          : statusLabel(entry.status)
-                        : "—"}
-                </Text>
-                {list.length > 1 && view !== "Year" && (
-                  <Text style={{ fontSize: 9, color: c.onAccent }}>
-                    +{list.length - 1} more
-                  </Text>
-                )}
-              </Pressable>
-            );
-          })}
+        <View style={{ gap: 5 }}>
+          {calendarRows.map((row, rowIndex) => (
+            <View
+              key={rowIndex}
+              testID="rota-date-row"
+              style={{ flexDirection: "row", gap: 5 }}
+            >
+              {row.map((date, columnIndex) => {
+                if (!date)
+                  return (
+                    <View
+                      key={"empty" + columnIndex}
+                      style={{ flex: 1, minWidth: 0 }}
+                    />
+                  );
+                const list = state.entries.filter((e) =>
+                  view === "Year"
+                    ? e.date.startsWith(date.slice(0, 7))
+                    : e.date === date,
+                );
+                const entry = list[0];
+                return (
+                  <View
+                    key={date}
+                    style={{
+                      width:
+                        view === "Year"
+                          ? "31.5%"
+                          : view === "Day"
+                            ? "100%"
+                            : undefined,
+                      flex: view === "Month" || view === "Week" ? 1 : undefined,
+                      minWidth: 0,
+                    }}
+                  >
+                    <Pressable
+                      testID={"rota-date-" + date}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: date === anchor }}
+                      accessibilityLabel={`${displayDate(date, s.dateFormat)} ${entry ? statusLabel(entry.status) + " " + entry.duty : "Unknown"}`}
+                      onFocus={() => setFocusedDate(date)}
+                      onBlur={() => setFocusedDate(null)}
+                      onPress={() => {
+                        setAnchor(date);
+                        if (view === "Year") setView("Month");
+                      }}
+                      style={({ pressed }) => ({
+                        width: "100%",
+                        minWidth: 0,
+                        minHeight: view === "Year" ? 85 : 78,
+                        backgroundColor: c.accent,
+                        borderWidth: 1,
+                        borderColor:
+                          date === anchor || pressed ? c.onAccent : c.accent,
+                        borderRadius: 12,
+                        paddingVertical: 8,
+                        paddingHorizontal:
+                          view === "Month" || view === "Week" ? 3 : 8,
+                        gap: 5,
+                        outlineColor: c.onAccent,
+                        outlineWidth: focusedDate === date || pressed ? 2 : 0,
+                        outlineStyle: "solid",
+                        outlineOffset: -4,
+                        transform: [{ translateY: pressed ? 1 : 0 }],
+                      })}
+                    >
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          color: c.onAccent,
+                          fontSize: 14,
+                          textAlign:
+                            view === "Month" || view === "Week"
+                              ? "center"
+                              : "left",
+                          fontWeight: date === anchor ? "700" : "500",
+                          textDecorationLine:
+                            date === anchor ? "underline" : "none",
+                        }}
+                      >
+                        {view === "Year"
+                          ? new Intl.DateTimeFormat("en-GB", {
+                              month: "short",
+                              timeZone: "UTC",
+                            }).format(new Date(date + "T12:00:00Z"))
+                          : Temporal.PlainDate.from(date).day}
+                      </Text>
+                      <Text
+                        numberOfLines={2}
+                        style={{
+                          color: c.onAccent,
+                          fontSize: 10,
+                          fontWeight: "600",
+                          textAlign:
+                            view === "Month" || view === "Week"
+                              ? "center"
+                              : "left",
+                        }}
+                      >
+                        {view === "Year"
+                          ? `${list.filter((e) => e.status === "Work").length} duties`
+                          : entry?.status === "Work"
+                            ? `${entry.category[0]} · ${entry.duty || "Work"}`
+                            : entry
+                              ? entry.status === "Holiday"
+                                ? entry.leaveApproval !== "confirmed"
+                                  ? "Leave?"
+                                  : "Leave"
+                                : statusLabel(entry.status)
+                              : "—"}
+                      </Text>
+                      {list.length > 1 && view !== "Year" && (
+                        <Text style={{ fontSize: 9, color: c.onAccent }}>
+                          +{list.length - 1} more
+                        </Text>
+                      )}
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
+          ))}
         </View>
         <Row>
           <Pill text="E · Early" tone="sun" />
