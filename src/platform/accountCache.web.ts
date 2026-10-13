@@ -2,6 +2,7 @@ export interface AccountCache {
   getItem(key: string): Promise<string | null>;
   setItem(key: string, value: string): Promise<void>;
   removeItem(key: string): Promise<void>;
+  getAllKeys?(): Promise<string[]>;
 }
 
 function storage(): Storage {
@@ -22,5 +23,11 @@ export const accountCache: AccountCache = {
   },
   async removeItem(key) {
     storage().removeItem(key);
+  },
+  async getAllKeys() {
+    const saved = storage();
+    return Array.from({ length: saved.length }, (_, i) => saved.key(i)).filter(
+      (key): key is string => key !== null,
+    );
   },
 };

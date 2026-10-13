@@ -21,10 +21,18 @@ import {
   type AccountConflictRecovery,
   type AccountStore,
 } from "./src/auth/accountStore";
-import { authProvider, accountRemote, hashSnapshot } from "./src/auth/service";
+import {
+  authProvider,
+  accountRemote,
+  hashSnapshot,
+  requestAccountDeletion,
+} from "./src/auth/service";
 import { useAuthentication, type AccountIdentity } from "./src/auth/controller";
 import { accountCache } from "./src/platform/accountCache";
-import { readLegacySnapshot } from "./src/platform/legacySnapshot";
+import {
+  readLegacySnapshot,
+  removeLegacySnapshotIfMatches,
+} from "./src/platform/legacySnapshot";
 import {
   activateNotificationOwner,
   clearNotificationOwner,
@@ -48,6 +56,8 @@ import {
   Body,
   Notice,
   WhiteSurface,
+  Card,
+  Heading,
 } from "./src/ui/components";
 import { Setup } from "./src/ui/Setup";
 import { Today, Sleep } from "./src/ui/TodaySleep";
@@ -57,6 +67,7 @@ import { SettingsScreen } from "./src/ui/Settings";
 import { createHeaderFeedback } from "./src/ui/editFeedback";
 import { HeaderFeedback } from "./src/ui/HeaderFeedback";
 import { FooterNavigation } from "./src/ui/FooterNavigation";
+import { DeleteAccount } from "./src/ui/DeleteAccount";
 const tabs = [
   { name: "Today", icon: "sun" },
   { name: "Rota", icon: "calendar" },
@@ -102,6 +113,7 @@ export default function App() {
             remote: accountRemote(identity.id),
             cache: accountCache,
             readLegacy: readLegacySnapshot,
+            removeLegacyIfMatches: removeLegacySnapshotIfMatches,
             hash: hashSnapshot,
           })
         : null,
@@ -115,10 +127,10 @@ export default function App() {
       void disableReminders().catch(() => undefined);
     };
   }, [identity?.id]);
-  const logout = async () => {
+  const logout = async (message?: string, accountDeleted = false) => {
     clearNotificationOwner();
     await disableReminders().catch(() => undefined);
-    await controller.logout();
+    await controller.logout(message, accountDeleted);
   };
   return (
     <SafeAreaProvider>
@@ -150,13 +162,14 @@ function Planner({
 }: {
   identity: AccountIdentity;
   store: AccountStore;
-  logout: () => Promise<void>;
+  logout: (message?: string, accountDeleted?: boolean) => Promise<void>;
 }) {
   const active = useRef(true);
   const plannerClock = useRef<ReturnType<typeof startPlannerClock> | null>(
     null,
   );
   const [focusedControl, setFocusedControl] = useState("");
+  const [accountOptionsOpen, setAccountOptionsOpen] = useState(false);
   const [dueAlerts, setDueAlerts] = useState<DueAlert[]>([]);
   const [conflict, setConflict] = useState<AccountConflictReview | null>(null);
   const [recovery, setRecovery] = useState<AccountConflictRecovery | null>(
@@ -207,6 +220,30 @@ function Planner({
   const leaveAccount = async () => {
     deactivate();
     await logout();
+  };
+  const deleteAccount = async (password: string, confirmation: string) => {
+    await requestAccountDeletion({
+      userId: identity.id,
+      email: identity.email,
+      password,
+      confirmation,
+    });
+    deactivate();
+    await disableReminders().catch(() => undefined);
+    let localCleanupFailed = false;
+    try {
+      await store.purgeDeletedAccount();
+    } catch {
+      localCleanupFailed = true;
+    }
+    // Server deletion is final even if this device has a storage failure. The
+    // account cannot reopen and the next session never trusts the old cache.
+    await logout(
+      localCleanupFailed
+        ? "Your account was deleted. Device storage could not be fully cleared; clear this app's data on this device."
+        : "Your account and planner were permanently deleted. You can create a new account if you choose.",
+      true,
+    );
   };
   const accessDenied = (error: unknown) =>
     handleAccountAccessDenied(error, { deactivate, logout });
@@ -344,17 +381,29 @@ function Planner({
     const refresh = () => {
       if (typeof document === "undefined" || !document.hidden) clock.refresh();
     };
-    if (typeof document !== "undefined")
+    if (
+      typeof document !== "undefined" &&
+      typeof document.addEventListener === "function"
+    )
       document.addEventListener("visibilitychange", refresh);
-    if (typeof window !== "undefined")
+    if (
+      typeof window !== "undefined" &&
+      typeof window.addEventListener === "function"
+    )
       window.addEventListener("focus", refresh);
     return () => {
       deactivate();
       clock.stop();
       plannerClock.current = null;
-      if (typeof document !== "undefined")
+      if (
+        typeof document !== "undefined" &&
+        typeof document.removeEventListener === "function"
+      )
         document.removeEventListener("visibilitychange", refresh);
-      if (typeof window !== "undefined")
+      if (
+        typeof window !== "undefined" &&
+        typeof window.removeEventListener === "function"
+      )
         window.removeEventListener("focus", refresh);
     };
   }, []);
@@ -469,17 +518,58 @@ function Planner({
       <StatusBar style="dark" />
       <View style={{ flex: 1, backgroundColor: c.bg }}>
         <ErrorBoundary>
-          {!state && conflict ? (
-            <AccountConflict
-              review={conflict}
-              busy={loadingAccount}
-              error={loadError}
-              message={message}
-              onRefresh={() => void load()}
-              onDownload={(source) => void downloadConflict(source)}
-              onOpenAccount={() => void openAccountVersion()}
-              onLogout={() => void leaveAccount()}
-            />
+          {accountOptionsOpen ? (
+            <ScrollView
+              style={{ flex: 1, backgroundColor: c.bg }}
+              contentContainerStyle={{ padding: wide ? 32 : 18, gap: 18 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View
+                style={{
+                  maxWidth: 800,
+                  width: "100%",
+                  alignSelf: "center",
+                  gap: 18,
+                }}
+              >
+                <Card>
+                  <Heading>Account options</Heading>
+                  <Body>{identity.email}</Body>
+                </Card>
+                <DeleteAccount email={identity.email} remove={deleteAccount} />
+                <Button
+                  title="Back to my planner"
+                  secondary
+                  onPress={() => setAccountOptionsOpen(false)}
+                />
+                <Button
+                  title="Log out"
+                  secondary
+                  icon="log-out"
+                  onPress={() => void leaveAccount()}
+                />
+              </View>
+            </ScrollView>
+          ) : !state && conflict ? (
+            <View style={{ flex: 1 }}>
+              <AccountConflict
+                review={conflict}
+                busy={loadingAccount}
+                error={loadError}
+                message={message}
+                onRefresh={() => void load()}
+                onDownload={(source) => void downloadConflict(source)}
+                onOpenAccount={() => void openAccountVersion()}
+                onLogout={() => void leaveAccount()}
+              />
+              <View style={{ padding: 12, backgroundColor: c.card }}>
+                <Button
+                  title="Account options"
+                  secondary
+                  onPress={() => setAccountOptionsOpen(true)}
+                />
+              </View>
+            </View>
           ) : !state ? (
             <View style={{ padding: 40, gap: 18, backgroundColor: c.card }}>
               <Text style={{ fontSize: 28, color: c.ink, fontWeight: "600" }}>
@@ -499,6 +589,11 @@ function Planner({
                     title="Log out"
                     secondary
                     onPress={() => void leaveAccount()}
+                  />
+                  <Button
+                    title="Account options"
+                    secondary
+                    onPress={() => setAccountOptionsOpen(true)}
                   />
                 </>
               )}
@@ -636,7 +731,20 @@ function Planner({
                     }}
                   >
                     {!state.settings.onboardingComplete ? (
-                      <Setup {...props!} />
+                      <View style={{ gap: 18 }}>
+                        <Setup {...props!} />
+                        <Button
+                          title="Account options"
+                          secondary
+                          onPress={() => setAccountOptionsOpen(true)}
+                        />
+                        <Button
+                          title="Log out"
+                          secondary
+                          icon="log-out"
+                          onPress={() => void leaveAccount()}
+                        />
+                      </View>
                     ) : tab === "Today" ? (
                       <Today {...props!} navigate={navigate} />
                     ) : tab === "Rota" ? (
@@ -657,6 +765,7 @@ function Planner({
                         accountEmail={identity.email}
                         accountId={identity.id}
                         logout={leaveAccount}
+                        deleteAccount={deleteAccount}
                         recovery={recovery}
                         exportRecovery={(source) =>
                           void downloadRecovery(source)

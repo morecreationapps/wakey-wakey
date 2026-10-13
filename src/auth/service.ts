@@ -9,6 +9,8 @@ import {
   accountAccessError,
   type AccountRemote,
 } from "./accountStore";
+import { deleteOwnAccount } from "./deleteAccount";
+import { authMessage } from "./controller";
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
 const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
@@ -175,6 +177,55 @@ export const authProvider: AuthProvider = {
 };
 export const hashSnapshot = (payload: string) =>
   Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, payload);
+
+export async function requestAccountDeletion(input: {
+  userId: string;
+  email: string;
+  password: string;
+  confirmation: string;
+}): Promise<void> {
+  // Isolate this temporary reauthentication from the displayed account's
+  // persisted session and auth listeners. It creates no new credentials.
+  const temporary = createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+  await deleteOwnAccount(input, {
+    async currentUserId() {
+      const { data, error } = await client().auth.getSession();
+      return error ? null : (data.session?.user.id ?? null);
+    },
+    async reauthenticate(email, password) {
+      const { data, error } = await temporary.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) throw new Error(authMessage(error));
+      if (!data.session)
+        throw new Error("Confirm your current password and try again.");
+      return { userId: data.session.user.id, token: data.session.access_token };
+    },
+    async deleteRemote(token) {
+      const { data, error } = await temporary.functions.invoke(
+        "wakey-delete-account",
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          body: { confirmation: "DELETE" },
+        },
+      );
+      if (error || data?.deleted !== true)
+        throw new Error(
+          "Account deletion could not be confirmed. Check your connection and log in again before retrying.",
+        );
+    },
+    async releaseSession() {
+      await temporary.auth.signOut({ scope: "local" });
+    },
+  });
+}
 export function accountRemote(userId: string): AccountRemote {
   async function rpc<T>(
     name: string,

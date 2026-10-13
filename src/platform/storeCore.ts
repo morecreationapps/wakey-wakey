@@ -101,5 +101,18 @@ export function createSnapshotStore(open: () => Promise<SnapshotDatabase>) {
         });
       });
     },
+    /** Remove a verified legacy owner's exact copy; changed records are retained. */
+    deleteStateIfMatchingPayload(payload: string): Promise<void> {
+      return serial(async () => {
+        const db = await database();
+        await db.withExclusiveTransactionAsync(async (transaction) => {
+          await transaction.runAsync(
+            "DELETE FROM app_snapshot WHERE id = ? AND payload = ?",
+            1,
+            payload,
+          );
+        });
+      });
+    },
   };
 }

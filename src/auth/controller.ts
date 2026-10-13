@@ -385,14 +385,14 @@ export class ManagedAuth implements AuthController {
         "Your password was changed. Log in with your email and new password.",
       );
     });
-  logout = async () => {
+  logout = async (
+    message = "You are logged out. Your saved planner has been retained.",
+    accountDeleted = false,
+  ) => {
     const generation = ++this.generation;
     this.pendingPassword = null;
     this.recoveryVerified = false;
-    this.clearIdentity(
-      "You are logged out. Your saved planner has been retained.",
-      true,
-    );
+    this.clearIdentity(message, true);
     // The provider can emit SIGNED_OUT before its asynchronous local cleanup
     // finishes. Keep login disabled until that cleanup has fully settled.
     this.expectedSignOut = true;
@@ -400,7 +400,11 @@ export class ManagedAuth implements AuthController {
       await this.provider.logout();
     } catch (error) {
       if (generation === this.generation)
-        this.emit({ error: authMessage(error) });
+        this.emit({
+          error: accountDeleted
+            ? "Your account was deleted. Local session cleanup needs attention; clear this app's data on this device."
+            : authMessage(error),
+        });
     } finally {
       this.expectedSignOut = false;
       if (generation === this.generation) this.emit({ busy: false });

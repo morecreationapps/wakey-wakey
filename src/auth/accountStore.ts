@@ -2,11 +2,13 @@ import { AppState } from "../model";
 import { initialState } from "../data/defaults";
 import { parseBackup } from "../data/backup";
 import type { AccountCache } from "../platform/accountCache";
+import { accountCacheKeysToDelete } from "./deleteAccount";
 
 export const ACCOUNT_CACHE_PREFIX = "wakey-wakey:account:v1:";
 // A remount/account switch can create a second store while an earlier save is
 // finishing. Share ordering by immutable owner key within this process.
 const accountQueues = new Map<string, Promise<unknown>>();
+const deletedAccountOwners = new Set<string>();
 export type AccountStoreErrorCode =
   | "NETWORK_ERROR"
   | "AUTH_ERROR"
@@ -195,9 +197,11 @@ export function createAccountStore(options: {
   remote: AccountRemote;
   cache: AccountCache;
   readLegacy: () => Promise<string | null>;
+  removeLegacyIfMatches?: (payload: string) => Promise<void>;
   hash: (payload: string) => Promise<string>;
 }) {
-  const { userId, remote, cache, readLegacy, hash } = options;
+  const { userId, remote, cache, readLegacy, hash, removeLegacyIfMatches } =
+    options;
   if (
     !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
       userId,
@@ -220,7 +224,14 @@ export function createAccountStore(options: {
     message: "Opening your account…",
   };
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
-    const next = (accountQueues.get(key) ?? Promise.resolve()).then(operation);
+    const next = (accountQueues.get(key) ?? Promise.resolve()).then(() => {
+      if (deletedAccountOwners.has(key))
+        throw new AccountStoreError(
+          "AUTH_ERROR",
+          "This account has been deleted.",
+        );
+      return operation();
+    });
     const settled = next.catch(() => undefined);
     accountQueues.set(key, settled);
     void settled.finally(() => {
@@ -909,6 +920,47 @@ export function createAccountStore(options: {
     readConflictRecovery,
     /** Resets only this account through compare-and-swap; legacy backup/data remain. */
     deleteState: () => saveState(initialState()),
+    /** Call only after the server confirms full deletion, not ordinary logout. */
+    purgeDeletedAccount: () =>
+      serial(async () => {
+        deletedAccountOwners.add(key);
+        current = null;
+        status = { ...status, loaded: false, dirty: false };
+        if (!cache.getAllKeys)
+          throw new AccountStoreError(
+            "CACHE_ERROR",
+            "Device account storage could not be cleared.",
+          );
+        const legacyRaw = await cache.getItem(backupKey);
+        let verifiedLegacyPayload: string | undefined;
+        if (legacyRaw && removeLegacyIfMatches) {
+          try {
+            const legacy = JSON.parse(legacyRaw) as LegacyBackup;
+            if (
+              legacy.version === 1 &&
+              legacy.ownerId === userId &&
+              typeof legacy.payload === "string" &&
+              digestValid(legacy.digest) &&
+              (await hash(legacy.payload)) === legacy.digest
+            ) {
+              parseBackup(legacy.payload);
+              verifiedLegacyPayload = legacy.payload;
+            }
+          } catch {
+            /* Unverified legacy source is retained; owned cache still clears. */
+          }
+        }
+        const keys = accountCacheKeysToDelete(await cache.getAllKeys(), userId);
+        const removals = keys.map((ownedKey) => cache.removeItem(ownedKey));
+        if (verifiedLegacyPayload && removeLegacyIfMatches)
+          removals.push(removeLegacyIfMatches(verifiedLegacyPayload));
+        const results = await Promise.allSettled(removals);
+        if (results.some((result) => result.status === "rejected"))
+          throw new AccountStoreError(
+            "CACHE_ERROR",
+            "Device account storage could not be fully cleared.",
+          );
+      }),
     status: (): AccountStoreStatus => ({ ...status }),
   };
 }

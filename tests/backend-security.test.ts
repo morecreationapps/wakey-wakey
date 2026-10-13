@@ -190,7 +190,7 @@ describe("executed PostgreSQL account security", () => {
         encrypted_password text, is_anonymous boolean default false,
         deleted_at timestamptz, banned_until timestamptz
       );
-      create table auth.sessions (id uuid primary key,user_id uuid references auth.users(id),not_after timestamptz);
+      create table auth.sessions (id uuid primary key,user_id uuid references auth.users(id) on delete cascade,not_after timestamptz);
       create function auth.jwt() returns jsonb language sql stable as $$
         select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{}'::jsonb);
       $$;
@@ -739,5 +739,97 @@ describe("executed PostgreSQL account security", () => {
     await expect(
       rpc("planner_migrate_legacy", [payload, digest(payload)]),
     ).rejects.toThrow(/no matching legacy migration grant/);
+  });
+  it("asserts fresh password deletion without requiring a planner or migration", async () => {
+    await user(A);
+    expect(await rpc("planner_assert_account_deletion")).toBe(true);
+    await owner();
+    await db.query("select private.reserve_admin_migration($1,$2)", [
+      "alice@example.invalid",
+      digest(payload),
+    ]);
+    await user(A);
+    expect(await rpc("planner_assert_account_deletion")).toBe(true);
+    await expect(rpc("planner_load")).rejects.toThrow(
+      /awaiting trusted migration/,
+    );
+  });
+  it("rejects stale authentication and revoked sessions for deletion", async () => {
+    await user(A, ["password"], {
+      amr: [
+        { method: "password", timestamp: Math.floor(Date.now() / 1000) - 600 },
+      ],
+    });
+    expect(await rpc("planner_assert_account_deletion")).toBe(false);
+    await user(A);
+    await owner();
+    await db.query("delete from auth.sessions where user_id=$1::uuid", [A]);
+    await user(A);
+    expect(await rpc("planner_assert_account_deletion")).toBe(false);
+  });
+  it("keeps deletion helpers inaccessible to anonymous users and clients", async () => {
+    await owner();
+    expect(
+      (
+        await db.query<{ allowed: boolean }>(
+          "select has_function_privilege('anon','public.planner_assert_account_deletion()','execute') as allowed",
+        )
+      ).rows[0].allowed,
+    ).toBe(false);
+    expect(
+      (
+        await db.query<{ allowed: boolean }>(
+          "select has_function_privilege('authenticated','private.remove_deleted_account_reservation()','execute') as allowed",
+        )
+      ).rows[0].allowed,
+    ).toBe(false);
+    await user(A, ["recovery"]);
+    expect(await rpc("planner_assert_account_deletion")).toBe(false);
+  });
+  it("hard deletion cascades owner data and removes only that email reservation", async () => {
+    await user(A);
+    await rpc("planner_save", [snapshot("Alice"), 0]);
+    await user(B);
+    await rpc("planner_save", [snapshot("Bob"), 0]);
+    await owner();
+    await db.exec("begin");
+    try {
+      await db.query(
+        "insert into private.migration_reservations(email,backup_digest) values($1,$3),($2,$3)",
+        ["alice@example.invalid", "bob@example.invalid", digest(payload)],
+      );
+      await db.query("delete from auth.users where id=$1::uuid", [A]);
+      expect(
+        (
+          await db.query<{ user_id: string }>(
+            "select user_id from public.planner_snapshots order by user_id",
+          )
+        ).rows,
+      ).toEqual([{ user_id: B }]);
+      expect(
+        (
+          await db.query<{ email: string }>(
+            "select email from private.migration_reservations order by email",
+          )
+        ).rows,
+      ).toEqual([{ email: "bob@example.invalid" }]);
+      expect(
+        (
+          await db.query("select * from auth.sessions where user_id=$1::uuid", [
+            A,
+          ])
+        ).rows,
+      ).toHaveLength(0);
+      expect(
+        (
+          await db.query(
+            "select * from private.planner_write_limits where user_id=$1::uuid",
+            [A],
+          )
+        ).rows,
+      ).toHaveLength(0);
+    } finally {
+      await db.exec("rollback");
+    }
   });
 });

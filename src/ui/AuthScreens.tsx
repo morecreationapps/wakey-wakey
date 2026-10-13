@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import type { AuthController } from "../auth/controller";
 import { Body, Button, Card, Heading, Notice, useTheme } from "./components";
+import { InformationLinks } from "./InformationLinks";
 
 type InputKind = "email" | "current-password" | "new-password" | "code";
 
@@ -661,6 +662,7 @@ export function AuthScreens({ controller }: { controller: AuthController }) {
                 has been retained.
               </Body>
             )}
+            <InformationLinks />
           </Card>
         </View>
       </ScrollView>

@@ -132,6 +132,11 @@ export interface SleepLog {
   estimatedMinutes: number | null;
   awakenings: number | null;
   rested: string;
+  /** Affirmative diary choice for this entry; absent on older/imported logs. */
+  consent?: {
+    version: string;
+    recordedAt: string;
+  };
 }
 export interface ReminderRecord {
   id: string;

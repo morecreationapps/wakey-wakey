@@ -421,3 +421,8 @@ enabled = true
 # formatted with uppercase keywords, indent 2, max width 180, trailing commas,
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
+
+# The handler validates current password JWTs and the live session itself.
+# Required for current asymmetric Auth JWTs; never remove handler checks.
+[functions.wakey-delete-account]
+verify_jwt = false

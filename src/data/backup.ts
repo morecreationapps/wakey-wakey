@@ -391,6 +391,18 @@ export function validateBackup(value: unknown): AppState {
     number(item.estimatedMinutes, `${path}.estimatedMinutes`, 1440, true);
     number(item.awakenings, `${path}.awakenings`, 100, true);
     string(item.rested, `${path}.rested`, 1000);
+    if (item.consent !== undefined) {
+      const consent = object(item.consent, `${path}.consent`);
+      if (!string(consent.version, `${path}.consent.version`, 100).trim())
+        fail(`${path}.consent.version`, "must not be blank");
+      try {
+        Temporal.Instant.from(
+          string(consent.recordedAt, `${path}.consent.recordedAt`, 40),
+        );
+      } catch {
+        fail(`${path}.consent.recordedAt`, "must be a valid timestamp");
+      }
+    }
     if (
       Temporal.PlainDateTime.compare(
         Temporal.PlainDateTime.from(item.wake as string),

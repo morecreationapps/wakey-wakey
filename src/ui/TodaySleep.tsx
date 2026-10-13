@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Pressable, Text } from "react-native";
+import { View, Pressable, Text, Platform, Linking } from "react-native";
 import { RotaEntry, Settings, systemClock, uid } from "../model";
 import {
   planShift,
@@ -43,6 +43,11 @@ import { formatPickerDateTime, formatPickerTime } from "./pickerValues";
 import { snapshotTaskPlacement } from "./taskDraft";
 import { shiftDayPanels } from "../engine/shiftDayPanels";
 import { panelRollover } from "../engine/panelRollover";
+import {
+  recordSleepDiaryConsent,
+  SLEEP_DIARY_CONSENT_TEXT,
+  SLEEP_DIARY_PRIVACY_URL,
+} from "./sleepDiaryConsent";
 
 function MissingInputs({
   items,
@@ -996,7 +1001,8 @@ export function Today({
   );
 }
 export function Sleep({ state, change, notify }: ScreenProps) {
-  const s = state.settings,
+  const c = useTheme(),
+    s = state.settings,
     today = dateInZone(systemClock, s.timezone),
     [date, setDate] = useState(today),
     [bed, setBed] = useState(addDays(today, -1) + "T23:00"),
@@ -1004,7 +1010,9 @@ export function Sleep({ state, change, notify }: ScreenProps) {
     [minutes, setMinutes] = useState(""),
     [awakenings, setAwakenings] = useState(""),
     [rested, setRested] = useState("Okay"),
-    [sleepy, setSleepy] = useState(false);
+    [sleepy, setSleepy] = useState(false),
+    [diaryConsent, setDiaryConsent] = useState(false),
+    [diaryConsentFocused, setDiaryConsentFocused] = useState(false);
   const upcoming = state.entries.filter(
     (e) =>
       e.status === "Work" && e.date >= today && e.date <= addDays(today, 14),
@@ -1102,10 +1110,83 @@ export function Sleep({ state, change, notify }: ScreenProps) {
           value={rested}
           onChange={setRested}
         />
+        <Body muted>
+          This diary is optional. Your check-in includes your bedtime, wake
+          time, any sleep estimates and awakenings you enter, and how rested you
+          feel. You can keep using your planner without saving a check-in. To
+          withdraw consent for saved diary information, contact
+          support@morecreationapps.com or delete your account in Settings.
+        </Body>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityLabel={SLEEP_DIARY_CONSENT_TEXT}
+          accessibilityState={{ checked: diaryConsent }}
+          aria-checked={diaryConsent}
+          onPress={() => setDiaryConsent((value) => !value)}
+          {...(Platform.OS === "web"
+            ? {
+                onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+                  // RN Web activates Enter; explicitly support Space for checkboxes.
+                  if (event.key === " ") {
+                    event.preventDefault();
+                    if (!event.repeat) setDiaryConsent((value) => !value);
+                  }
+                },
+              }
+            : {})}
+          onFocus={() => setDiaryConsentFocused(true)}
+          onBlur={() => setDiaryConsentFocused(false)}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 12,
+            minHeight: 48,
+            padding: 12,
+            borderWidth: 1,
+            borderColor: c.line,
+            borderRadius: 12,
+            backgroundColor: c.card,
+            outlineColor: c.accent,
+            outlineWidth: diaryConsentFocused || pressed ? 2 : 0,
+            outlineOffset: 2,
+          })}
+        >
+          <View
+            style={{
+              width: 26,
+              height: 26,
+              borderWidth: 2,
+              borderColor: c.accent,
+              borderRadius: 5,
+              backgroundColor: diaryConsent ? c.accent : c.white,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {diaryConsent && <Icon name="check" size={19} colour={c.white} />}
+          </View>
+          <Body style={{ flex: 1 }}>{SLEEP_DIARY_CONSENT_TEXT}</Body>
+        </Pressable>
+        <Button
+          title="Read privacy policy"
+          secondary
+          small
+          icon="external-link"
+          onPress={() => {
+            Linking.openURL(SLEEP_DIARY_PRIVACY_URL).catch(() =>
+              notify("The privacy page could not open. Please try again."),
+            );
+          }}
+        />
         <Button
           title="Save check-in"
+          disabled={!diaryConsent}
           onPress={() => {
             try {
+              const consent = recordSleepDiaryConsent(
+                diaryConsent,
+                systemClock.now(),
+              );
               const b = zonedEpoch(bed, s.timezone),
                 w = zonedEpoch(wake, s.timezone);
               if (w <= b) throw Error("Wake must follow bedtime.");
@@ -1133,9 +1214,11 @@ export function Sleep({ state, change, notify }: ScreenProps) {
                     estimatedMinutes: minutes ? Number(minutes) : null,
                     awakenings: awakenings ? Number(awakenings) : null,
                     rested,
+                    consent,
                   },
                 ],
               }));
+              setDiaryConsent(false);
               notify("Self-reported check-in saved.");
               if (rested === "Very sleepy") setSleepy(true);
             } catch (e) {

@@ -1,6 +1,6 @@
 {
   "name": "wakey-wakey",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {
@@ -20,13 +20,15 @@
     "check:public": "node scripts/check-public-build.mjs",
     "format": "prettier --write src App.tsx index.ts tests docs README.md",
     "bootstrap": "node scripts/bootstrap.mjs",
-    "postinstall": "node scripts/bootstrap.mjs"
+    "postinstall": "node scripts/bootstrap.mjs",
+    "build:native": "node scripts/build-native.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
     "@js-temporal/polyfill": "^0.5.1",
     "@supabase/supabase-js": "2.117.2",
     "expo": "~57.0.27",
+    "expo-build-properties": "~57.0.22",
     "expo-crypto": "57.0.3",
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",

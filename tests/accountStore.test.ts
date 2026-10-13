@@ -33,6 +33,7 @@ function cacheFixture() {
     removeItem: async (key) => {
       values.delete(key);
     },
+    getAllKeys: async () => [...values.keys()],
   };
   return { values, cache };
 }
@@ -263,6 +264,103 @@ describe("trusted setup-pending access classification", () => {
       expect(logout).toHaveBeenCalledOnce();
     },
   );
+});
+
+describe("confirmed full account local deletion", () => {
+  it("waits for queued saves, purges only owner records and fences subsequent stores", async () => {
+    const deletedOwner = "33333333-3333-4333-8333-333333333331";
+    const { cache, values } = cacheFixture();
+    const { remote } = remoteFixture();
+    const { store } = create(deletedOwner, remote, cache);
+    await store.loadState();
+    const key = `${ACCOUNT_CACHE_PREFIX}${deletedOwner}`;
+    values.set(`${key}:conflict-backup:v1:device:test`, "owned-backup");
+    values.set(`${ACCOUNT_CACHE_PREFIX}${OTHER}`, "other-account-copy");
+    values.set("unowned-legacy-source", "unowned-data");
+    const saving = store.saveState(initialState());
+    const purging = store.purgeDeletedAccount();
+    await Promise.all([saving, purging]);
+    expect([...values.keys()]).toEqual([
+      `${ACCOUNT_CACHE_PREFIX}${OTHER}`,
+      "unowned-legacy-source",
+    ]);
+    await expect(store.saveState(initialState())).rejects.toMatchObject({
+      code: "AUTH_ERROR",
+    });
+    await expect(
+      create(deletedOwner, remote, cache).store.loadState(),
+    ).rejects.toMatchObject({ code: "AUTH_ERROR" });
+  });
+  it("removes an exact legacy source only after validating the owner's retained receipt", async () => {
+    const deletedOwner = "33333333-3333-4333-8333-333333333332";
+    const { cache, values } = cacheFixture();
+    const { remote } = remoteFixture();
+    const original = JSON.stringify(initialState());
+    const removeLegacyIfMatches = vi.fn(async () => undefined);
+    values.set(
+      `${ACCOUNT_CACHE_PREFIX}${deletedOwner}:legacy-backup:v1`,
+      JSON.stringify({
+        version: 1,
+        ownerId: deletedOwner,
+        payload: original,
+        digest: await hash(original),
+      }),
+    );
+    const store = createAccountStore({
+      userId: deletedOwner,
+      remote,
+      cache,
+      readLegacy: async () => original,
+      removeLegacyIfMatches,
+      hash,
+    });
+    await store.purgeDeletedAccount();
+    expect(removeLegacyIfMatches).toHaveBeenCalledWith(original);
+    expect(values.size).toBe(0);
+  });
+  it("clears owned caches even when a legacy receipt is corrupt, without deleting unverified legacy data", async () => {
+    const deletedOwner = "33333333-3333-4333-8333-333333333333";
+    const { cache, values } = cacheFixture();
+    const { remote } = remoteFixture();
+    const key = `${ACCOUNT_CACHE_PREFIX}${deletedOwner}`;
+    values.set(key, "owned-cache");
+    values.set(`${key}:legacy-backup:v1`, "{broken");
+    const removeLegacyIfMatches = vi.fn(async () => undefined);
+    const store = createAccountStore({
+      userId: deletedOwner,
+      remote,
+      cache,
+      readLegacy: async () => null,
+      removeLegacyIfMatches,
+      hash,
+    });
+    await store.purgeDeletedAccount();
+    expect(values.size).toBe(0);
+    expect(removeLegacyIfMatches).not.toHaveBeenCalled();
+  });
+  it("attempts all owner removals before reporting a partial device storage failure", async () => {
+    const deletedOwner = "33333333-3333-4333-8333-333333333334";
+    const { cache, values } = cacheFixture();
+    const { remote } = remoteFixture();
+    const key = `${ACCOUNT_CACHE_PREFIX}${deletedOwner}`;
+    const backup = `${key}:conflict-backup:v1:device:test`;
+    values.set(key, "owned-cache");
+    values.set(backup, "owned-backup");
+    const originalRemove = cache.removeItem;
+    cache.removeItem = async (entry) => {
+      if (entry === key) throw new Error("device-storage-failure");
+      await originalRemove(entry);
+    };
+    const { store } = create(deletedOwner, remote, cache);
+    await expect(store.purgeDeletedAccount()).rejects.toMatchObject({
+      code: "CACHE_ERROR",
+    });
+    expect(values.has(backup)).toBe(false);
+    expect(values.has(key)).toBe(true);
+    await expect(store.loadState()).rejects.toMatchObject({
+      code: "AUTH_ERROR",
+    });
+  });
 });
 
 describe("owner-scoped account snapshots", () => {

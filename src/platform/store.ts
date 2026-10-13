@@ -5,4 +5,9 @@ import { createSnapshotStore } from "./storeCore";
 const store = createSnapshotStore(() =>
   SQLite.openDatabaseAsync("wakey-wakey.db"),
 );
-export const { loadState, saveState, deleteState } = store;
+export const {
+  loadState,
+  saveState,
+  deleteState,
+  deleteStateIfMatchingPayload,
+} = store;

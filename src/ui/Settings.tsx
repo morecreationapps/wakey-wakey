@@ -14,6 +14,7 @@ import {
   ui,
 } from "./components";
 import { SettingsFields } from "./Setup";
+import { InformationLinks } from "./InformationLinks";
 import {
   notificationStatus,
   requestReminders,
@@ -32,6 +33,7 @@ import { initialState } from "../data/defaults";
 import { AppState, systemClock } from "../model";
 import { displayDate, displayTime, localAt } from "../engine/time";
 import type { AccountConflictRecovery } from "../auth/accountStore";
+import { DeleteAccount } from "./DeleteAccount";
 export function SettingsScreen({
   state,
   change,
@@ -41,6 +43,7 @@ export function SettingsScreen({
   accountEmail,
   accountId,
   logout,
+  deleteAccount,
   recovery,
   exportRecovery,
 }: ScreenProps & {
@@ -49,6 +52,7 @@ export function SettingsScreen({
   accountEmail: string;
   accountId: string;
   logout: () => Promise<void>;
+  deleteAccount: (password: string, confirmation: string) => Promise<void>;
   recovery?: AccountConflictRecovery | null;
   exportRecovery?: (source: "device" | "account") => void;
 }) {
@@ -82,6 +86,7 @@ export function SettingsScreen({
         <Heading small>Your account</Heading>
         <Body>{accountEmail}</Body>
         <Button title="Log out" icon="log-out" onPress={() => void logout()} />
+        <InformationLinks />
       </Card>
       <Body muted>
         Change your routine as life changes. Saved duties keep their recorded
@@ -411,6 +416,7 @@ export function SettingsScreen({
           </Notice>
         )}
       </Card>
+      <DeleteAccount email={accountEmail} remove={deleteAccount} />
     </View>
   );
 }
