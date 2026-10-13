@@ -57,6 +57,9 @@ export interface TaskPlacement {
 export interface PreparationTaskContext {
   /** Opt-in only for the previous date of this duty's explicit sleep pair. */
   beforeShiftId: string;
+  /** Place automatic preparation near the bedtime routine, even when all
+   * rest-day sleep inputs are already complete. This does not relax safety. */
+  preferLatest?: boolean;
 }
 interface Interval {
   start: number;
@@ -1015,8 +1018,9 @@ export function planTasks(
   const today = dateInZone(snapshotClock, settings.timezone),
     lastDate = addDays(today, Math.max(1, Math.min(366, horizonDays)));
   const horizonEnd = onDate(lastDate, "00:00", settings.timezone);
-  let provisionalPreparationDate: string | undefined;
-  if (preparationContext && (!settings.restWake || !settings.restBed)) {
+  let provisionalPreparationDate: string | undefined,
+    latestPreparationDate: string | undefined;
+  if (preparationContext) {
     const selectedShift = entries.find(
       (e) => e.id === preparationContext.beforeShiftId && e.status === "Work",
     );
@@ -1031,14 +1035,22 @@ export function planTasks(
             ),
             selectedPlan = planShift(selectedShift, settings, entries, tasks),
             wind = selectedPlan.events.find((e) => e.kind === "windDown")?.at;
-          if (
-            preferences !== null &&
-            !preferences.missing.length &&
+          const preparationDate = addDays(
+            localAt(bounds.start, settings.timezone).slice(0, 10),
+            -1,
+          );
+          const hasRoutine =
             selectedPlan.events.some((e) => e.kind === "wake") &&
             selectedPlan.events.some((e) => e.kind === "bedtime") &&
             wind !== undefined &&
-            localAt(wind, settings.timezone).slice(0, 10) ===
-              preferences.preparationDate
+            localAt(wind, settings.timezone).slice(0, 10) === preparationDate;
+          if (preparationContext.preferLatest && hasRoutine)
+            latestPreparationDate = preparationDate;
+          if (
+            (!settings.restWake || !settings.restBed) &&
+            preferences !== null &&
+            !preferences.missing.length &&
+            hasRoutine
           )
             provisionalPreparationDate = preferences.preparationDate;
         }
@@ -1508,6 +1520,24 @@ export function planTasks(
     return { notBefore, reasons, routine };
   };
   for (const task of [...fixed, ...flexible]) {
+    const automaticPreparation =
+      task.preparationAutoStart === true &&
+      task.linkedShiftId === preparationContext?.beforeShiftId &&
+      !fixed.includes(task);
+    if (
+      automaticPreparation &&
+      preparationContext?.preferLatest &&
+      !latestPreparationDate
+    ) {
+      result.push({
+        taskId: task.id,
+        start: null,
+        end: null,
+        reason:
+          "A wake time, planned bedtime and wind-down on the preparation day are needed before suggesting this task's start time.",
+      });
+      continue;
+    }
     if (
       !finiteMinutes(task.minutes) ||
       task.minutes === 0 ||
@@ -1684,10 +1714,11 @@ export function planTasks(
         }
         continue;
       }
-      let upper = Math.min(occurrenceEnd, horizonEnd);
+      let upper = Math.min(occurrenceEnd, horizonEnd),
+        reservedPreparationMinutes = 0;
       if (
-        provisionalPreparationDate &&
-        task.linkedShiftId === preparationContext?.beforeShiftId
+        (provisionalPreparationDate || latestPreparationDate) &&
+        automaticPreparation
       ) {
         // Leave room for selected dependent activities after this prerequisite
         // when packing or ironing is allocated near the bedtime routine.
@@ -1709,7 +1740,7 @@ export function planTasks(
           }
           return total;
         };
-        upper -= reserve(task) * MINUTE;
+        reservedPreparationMinutes = reserve(task);
       }
       // A booked dependant cannot move. Its prerequisite must fit before the
       // appointment's reserved travel, or the fixed row will show a conflict.
@@ -1794,9 +1825,30 @@ export function planTasks(
         }
         if (cursor < limit) gaps.push({ start: cursor, end: limit });
         const latestPreparationGap =
-          date === provisionalPreparationDate &&
+          (date === provisionalPreparationDate ||
+            (date === latestPreparationDate && automaticPreparation)) &&
           task.linkedShiftId === preparationContext?.beforeShiftId;
-        for (const gap of latestPreparationGap ? [...gaps].reverse() : gaps) {
+        let preparationLimit = limit;
+        if (latestPreparationGap && reservedPreparationMinutes > 0) {
+          // Reserve actual free space for dependants. A booked commitment can
+          // occupy the end of the overall deadline, and split prerequisites
+          // can use earlier gaps while the dependant fits a later free gap.
+          const reservedGap = [...gaps]
+            .reverse()
+            .find(
+              (gap) =>
+                gap.end - gap.start >= reservedPreparationMinutes * MINUTE,
+            );
+          if (!reservedGap) continue;
+          preparationLimit =
+            reservedGap.end - reservedPreparationMinutes * MINUTE;
+        }
+        const permittedGaps = gaps
+          .map((gap) => ({ ...gap, end: Math.min(gap.end, preparationLimit) }))
+          .filter((gap) => gap.end > gap.start);
+        for (const gap of latestPreparationGap
+          ? [...permittedGaps].reverse()
+          : permittedGaps) {
           const capacity =
             Math.floor((gap.end - gap.start) / MINUTE) - task.travelMinutes;
           if (capacity <= 0 || (!task.splittable && capacity < remaining))

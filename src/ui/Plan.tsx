@@ -88,9 +88,6 @@ export function Plan({ state, change, notify }: ScreenProps) {
     if (!draftShift) return task;
     const overrides = {
       id: task.id,
-      kind: task.kind,
-      movable: task.movable,
-      locked: task.locked,
       ...taskSuggestionOverrides(task, editedFields.current),
     };
     const suggestion =
@@ -255,7 +252,7 @@ export function Plan({ state, change, notify }: ScreenProps) {
         <Button
           title="Add task / appointment"
           icon="plus"
-          onPress={() => create("flexible", "", false)}
+          onPress={() => create()}
         />
       </Row>
       <Card>

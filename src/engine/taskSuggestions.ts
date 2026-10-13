@@ -277,6 +277,9 @@ function suggest(
       movable: true,
       locked: false,
       scheduledStart: null,
+      // The draft has no chosen time yet, including a new fixed appointment.
+      // Once saved, the candidate retains its original fixed/manual semantics.
+      preparationAutoStart: true,
       earliest: localAt(dayStart, settings.timezone),
       deadline: localAt(
         Math.max(dayStart, Math.min(until, requestedDeadline ?? until)),
@@ -387,9 +390,23 @@ function suggest(
     candidate.earliest = localAt(start, settings.timezone);
     candidate.scheduledStart = localAt(start, settings.timezone);
   }
+  // An appointment without a chosen clock still needs a free-slot preview.
+  // Treating the neutral midnight lower bound as a fixed booking would invent
+  // a time when the previous pass could not find a permitted suggestion.
+  const previewCandidate =
+    explicit === undefined &&
+    (candidate.kind === "fixed" || candidate.locked || !candidate.movable)
+      ? {
+          ...candidate,
+          kind: "essential" as const,
+          locked: false,
+          movable: true,
+          preparationAutoStart: true,
+        }
+      : candidate;
   const scheduled = planPreparation(
     entries,
-    [...context, candidate],
+    [...context, previewCandidate],
     settings,
     clock,
     { selectedShift: next },
@@ -398,7 +415,12 @@ function suggest(
     placement = scheduled.placements.find((p) => p.taskId === id);
   let conflict =
     row?.conflict ?? (placement?.start === null ? placement.reason : undefined);
-  if (placement?.start === null && explicit === undefined) start = null;
+  // The final preparation pass can move other automatic activities to make
+  // room for a dependency. Use its result before deciding the draft has no slot.
+  if (explicit === undefined) {
+    if (row) start = row.at;
+    else if (placement) start = placement.start;
+  }
   if (start === null) {
     const missing: string[] = [];
     if (event("wake") === undefined) {
@@ -438,11 +460,6 @@ function suggest(
   if (minutes <= 0 || !Number.isFinite(minutes))
     conflict =
       "Enter a positive duration before calculating a suitable start time.";
-  if (row?.at !== null && row?.at !== undefined && explicit === undefined) {
-    start = row.at;
-    candidate.earliest = localAt(start, settings.timezone);
-    candidate.scheduledStart = candidate.earliest;
-  }
   if (start !== null && start < clock.now())
     conflict = [
       conflict,

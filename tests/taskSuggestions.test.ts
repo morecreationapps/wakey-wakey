@@ -8,6 +8,7 @@ import {
   suggestPreparationTask,
 } from "../src/engine/taskSuggestions";
 import { planShift, planTasks } from "../src/engine/planner";
+import { taskForSaving } from "../src/ui/taskDraft";
 import {
   addDays,
   localAt,
@@ -673,7 +674,7 @@ describe("task-aware day-before suggestions", () => {
         windowEnd: "10:00",
       },
     )!;
-    expect(v.earliest).toBe("2026-10-09T09:00");
+    expect(v.earliest).toBe("2026-10-09T09:30");
     expect(v.deadline).toBe("2026-10-09T10:00");
     expect(v.conflict).toBeUndefined();
     const impossible = suggestPreparationTask(
@@ -947,4 +948,234 @@ describe("task-aware day-before suggestions", () => {
       "timezones",
     );
   });
+});
+
+describe("automatic preparation uses the bedtime routine with complete sleep settings", () => {
+  const complete = () =>
+    settings({
+      sleepTarget: 420,
+      earlyWake: "04:00",
+      lateWake: "07:00",
+      beforeEarlyBed: "20:30",
+      beforeEarlyWake: "04:00",
+      beforeLateBed: "23:30",
+      beforeLateWake: "07:00",
+    });
+
+  it.each([
+    ["Early", "06:00", "19:20", "19:30"],
+    ["Late", "14:08", "22:20", "22:30"],
+  ] as const)(
+    "fills a ten-minute clothes task before %s %s wind-down and retains that placement after saving",
+    (category, _shiftTime, expectedStart, expectedWindDown) => {
+      const entry = shift(category),
+        s = complete(),
+        entries = [rest("2026-10-09"), entry],
+        { suggestion, task } = suggested("Lay out clothes", entry, s),
+        saved = taskForSaving(task, zone),
+        before = JSON.stringify({ s, entries, saved }),
+        plan = planPreparation(entries, [saved], s, clock());
+      expect(suggestion.earliest).toBe(`2026-10-09T${expectedStart}`);
+      expect(suggestion.scheduledStart).toBe(suggestion.earliest);
+      expect(suggestion.minutes).toBe(10);
+      expect(suggestion.conflict).toBeUndefined();
+      const row = plan.rows.find((r) => r.taskId === saved.id)!;
+      expect(localAt(row.at!, zone)).toBe(suggestion.earliest);
+      expect(localAt(row.end!, zone)).toBe(`2026-10-09T${expectedWindDown}`);
+      expect(row.conflict).toBeUndefined();
+      expect(plan.rows.filter((r) => r.taskId === saved.id)).toHaveLength(1);
+      expect(plan.shiftPlan).toEqual(planShift(entry, s, entries, [saved]));
+      expect(JSON.stringify({ s, entries, saved })).toBe(before);
+    },
+  );
+
+  it("gives an unrecognised preparation task the latest fitting editable start", () => {
+    const entry = shift("Late"),
+      s = complete(),
+      entries = [rest("2026-10-09"), entry],
+      suggestion = defaultPreparationTaskStart(
+        entries,
+        [],
+        s,
+        clock(),
+        { title: "Check tomorrow's train", minutes: 15 },
+        entry,
+      )!;
+    expect(suggestion.earliest).toBe("2026-10-09T22:15");
+    expect(suggestion.scheduledStart).toBe(suggestion.earliest);
+    expect(suggestion.deadline).toBe("");
+    expect(suggestion.windowStart).toBe("");
+    expect(suggestion.windowEnd).toBe("");
+    expect(suggestion).not.toHaveProperty("location");
+    expect(suggestion.conflict).toBeUndefined();
+  });
+
+  it("works backwards around a fixed appointment and its travel without moving it", () => {
+    const entry = shift("Late"),
+      s = complete(),
+      appointment = base("booking", "Call with family", {
+        kind: "fixed",
+        earliest: "2026-10-09T22:00",
+        scheduledStart: "2026-10-09T22:00",
+        minutes: 30,
+        travelMinutes: 10,
+        locked: true,
+        movable: false,
+      }),
+      before = JSON.stringify(appointment),
+      { suggestion, task } = suggested("Lay out clothes", entry, s, [
+        appointment,
+      ]),
+      plan = planPreparation(
+        [rest("2026-10-09"), entry],
+        [appointment, task],
+        s,
+        clock(),
+      );
+    expect(suggestion.earliest).toBe("2026-10-09T21:40");
+    expect(
+      localAt(plan.rows.find((r) => r.taskId === appointment.id)!.at!, zone),
+    ).toBe("2026-10-09T22:00");
+    expect(
+      plan.rows.find((r) => r.taskId === task.id)!.conflict,
+    ).toBeUndefined();
+    expect(JSON.stringify(appointment)).toBe(before);
+  });
+
+  it("respects edited duration, window, deadline and travel before the routine", () => {
+    const entry = shift("Late"),
+      { suggestion } = suggested("Lay out clothes", entry, complete(), [], {
+        minutes: 20,
+        travelMinutes: 15,
+        windowStart: "18:00",
+        windowEnd: "21:00",
+        deadline: "2026-10-09T20:30",
+      });
+    expect(suggestion.earliest).toBe("2026-10-09T20:10");
+    expect(suggestion.minutes).toBe(20);
+    expect(suggestion.deadline).toBe("2026-10-09T20:30");
+    expect(suggestion.windowStart).toBe("18:00");
+    expect(suggestion.windowEnd).toBe("21:00");
+    expect(suggestion.conflict).toBeUndefined();
+  });
+
+  it("keeps laundry before ironing and lunch before packing when placing near wind-down", () => {
+    const entry = shift("Late"),
+      s = complete(),
+      entries = [rest("2026-10-09"), entry],
+      tasks: Task[] = [];
+    for (const title of [
+      "Laundry",
+      "Iron work clothes",
+      "Prepare lunch",
+      "Pack work bag",
+    ]) {
+      const { suggestion, task } = suggested(title, entry, s, tasks, {
+        id: title,
+      });
+      expect(suggestion.scheduledStart, title).not.toBeNull();
+      expect(suggestion.conflict, title).toBeUndefined();
+      tasks.push(taskForSaving(task, zone));
+      const row = planPreparation(entries, tasks, s, clock()).rows.find(
+        (r) => r.taskId === task.id,
+      )!;
+      expect(localAt(row.at!, zone), title).toBe(suggestion.scheduledStart);
+    }
+    const plan = planPreparation(entries, [...tasks].reverse(), s, clock()),
+      rows = plan.rows.filter((r) => r.taskId && r.at !== null);
+    expect(rows).toHaveLength(4);
+    const row = (title: string) => rows.find((r) => r.taskId === title)!;
+    expect(row("Laundry").end!).toBeLessThanOrEqual(
+      row("Iron work clothes").at!,
+    );
+    expect(row("Prepare lunch").end!).toBeLessThanOrEqual(
+      row("Pack work bag").at!,
+    );
+    for (let i = 0; i < rows.length; i++) {
+      expect(rows[i].conflict).toBeUndefined();
+      expect(rows[i].end!).toBeLessThanOrEqual(
+        zonedEpoch("2026-10-09T22:30", zone),
+      );
+      if (i) expect(rows[i - 1].end!).toBeLessThanOrEqual(rows[i].at!);
+    }
+  });
+
+  it("retains a deliberately chosen task time when the automatic preference is available", () => {
+    const entry = shift("Late"),
+      { suggestion, task } = suggested(
+        "Lay out clothes",
+        entry,
+        complete(),
+        [],
+        {
+          earliest: "2026-10-09T12:10",
+          scheduledStart: "2026-10-09T12:10",
+        },
+      ),
+      plan = planPreparation(
+        [rest("2026-10-09"), entry],
+        [task],
+        complete(),
+        clock(),
+      );
+    expect(suggestion.earliest).toBe("2026-10-09T12:10");
+    expect(suggestion.preparationAutoStart).toBe(false);
+    expect(
+      localAt(plan.rows.find((r) => r.taskId === task.id)!.at!, zone),
+    ).toBe("2026-10-09T12:10");
+  });
+
+  it.each(["essential", "fixed"] as const)(
+    "leaves a new %s start blank instead of guessing midnight or shortening protected sleep when no space remains",
+    (kind) => {
+      const entry = shift("Late"),
+        booking = base("all-day", "Unavailable", {
+          kind: "fixed",
+          earliest: "2026-10-09T07:00",
+          scheduledStart: "2026-10-09T07:00",
+          minutes: 930,
+          locked: true,
+          movable: false,
+        }),
+        { suggestion } = suggested(
+          "Lay out clothes",
+          entry,
+          complete(),
+          [booking],
+          { kind },
+        );
+      expect(suggestion.preparationDate).toBe("2026-10-09");
+      expect(suggestion.earliest).toBe("");
+      expect(suggestion.scheduledStart).toBeNull();
+      expect(suggestion.conflict).toBeTruthy();
+    },
+  );
+
+  it.each([
+    { kind: "essential" as const },
+    { kind: "fixed" as const },
+    { locked: true },
+    { movable: false },
+  ])(
+    "does not invent a bedtime-adjacent slot with missing sleep inputs and overrides %j",
+    (overrides) => {
+      const missing = suggested(
+        "Lay out clothes",
+        shift("Late"),
+        {
+          ...complete(),
+          beforeLateBed: null,
+          beforeLateWake: null,
+          lateWake: null,
+          consistentWake: false,
+        },
+        [],
+        overrides,
+      ).suggestion;
+      expect(missing.preparationDate).toBe("2026-10-09");
+      expect(missing.earliest).toBe("");
+      expect(missing.scheduledStart).toBeNull();
+      expect(missing.conflict).toBeTruthy();
+    },
+  );
 });

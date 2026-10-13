@@ -202,7 +202,9 @@ export function preparationCalculationContext(
         },
       ];
   }
-  let taskContext: { beforeShiftId: string } | undefined;
+  // Placement near the routine is independent of permission to suggest a
+  // provisional slot when the preparation day's own sleep inputs are missing.
+  const taskContext = { beforeShiftId: shift.id, preferLatest: true };
   try {
     const start = shift.start
         ? zonedEpoch(shift.start, shift.timezone, shift.disambiguation)
@@ -225,7 +227,6 @@ export function preparationCalculationContext(
         preferences.preparationDate &&
       (!settings.restWake || !settings.restBed)
     ) {
-      taskContext = { beforeShiftId: shift.id };
       warnings.push(
         "Your pre-shift sleep preferences protect the coming night's full sleep target, using the calculated bedtime or usual wake fallback for any blank field. Waking and sleep availability earlier on the preparation day are still unconfirmed; these are editable provisional timings near the bedtime routine, around recorded work and commitments. Review them before relying on the schedule.",
       );
