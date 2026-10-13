@@ -279,6 +279,7 @@ interface Interval {
   start: number;
   end: number;
   label: string;
+  taskId?: string;
 }
 /** A blank endpoint is neutral; the other entered endpoint still applies. */
 function taskWindow(task: Task, date: string, settings: Settings) {
@@ -533,8 +534,14 @@ export function planPreparation(
           m.startsWith("Review bedtime") || m.startsWith("Review wake time"),
       ),
     );
-  const block = (start: number, end: number, label: string) => {
-    if (end > start) blocked.push({ start, end, label });
+  const block = (
+    start: number,
+    end: number,
+    label: string,
+    taskId?: string,
+  ) => {
+    if (end > start)
+      blocked.push({ start, end, label, ...(taskId ? { taskId } : {}) });
   };
   for (const entry of entries) {
     try {
@@ -700,25 +707,67 @@ export function planPreparation(
       /* Invalid rest preferences are already surfaced by the task planner. */
     }
   }
-  for (const task of selected.filter(
-    (t) => fixedTask(t) && !bedtimeActivity(t) && !inactive(t.state),
-  )) {
-    const occurrence = occurrenceOn(
+  // Every retained clock is reserved before any automatic routine is placed.
+  // Completed rows remain visible at their recorded time, so that same interval
+  // must not be offered again to another task in this preparation schedule.
+  const completedReservations: Interval[] = [];
+  let retainedPreparationEnd = dayStart;
+  const reservationOccurrences = selected.flatMap((task) => {
+    const occurrenceDate = occurrenceOn(
       task,
-      localAt(dayStart + 12 * 60 * MINUTE, settings.timezone).slice(0, 10),
+      preparationDate,
       settings.timezone,
     );
-    if (occurrence === null) continue;
+    return occurrenceDate === null
+      ? []
+      : [
+          {
+            task,
+            occurrenceDate,
+            state: occurrenceDate
+              ? (task.occurrenceStates?.[occurrenceDate] ?? task.state)
+              : task.state,
+          },
+        ];
+  });
+  for (const { task, occurrenceDate, state } of reservationOccurrences) {
+    if (state === "skipped" || state === "deferred") continue;
+    const retained =
+      state === "completed" ||
+      fixedTask(task) ||
+      (!!task.scheduledStart && task.preparationAutoStart !== true);
+    if (!retained || (!task.scheduledStart && !fixedTask(task))) continue;
     const raw = task.scheduledStart ?? task.earliest,
       chosen = safeEpoch(
-        occurrence ? `${occurrence}T${raw.slice(11, 16)}` : raw,
+        occurrenceDate ? `${occurrenceDate}T${raw.slice(11, 16)}` : raw,
         settings.timezone,
       );
-    if (chosen !== null)
-      block(
-        chosen - task.travelMinutes * MINUTE,
-        chosen + task.minutes * MINUTE,
-        `fixed commitment: ${task.title}`,
+    if (
+      chosen === null ||
+      !Number.isFinite(task.minutes) ||
+      task.minutes <= 0 ||
+      !Number.isFinite(task.travelMinutes) ||
+      task.travelMinutes < 0
+    )
+      continue;
+    const reservation = {
+      start: chosen - task.travelMinutes * MINUTE,
+      end: chosen + task.minutes * MINUTE,
+      label: `${state === "completed" ? "completed activity" : "retained commitment"}: ${task.title}`,
+      taskId: task.id,
+    };
+    block(reservation.start, reservation.end, reservation.label, task.id);
+    if (state === "completed") completedReservations.push(reservation);
+    if (
+      !bedtimeActivity(task) &&
+      chosen >= dayStart &&
+      chosen < dayEnd &&
+      (task.linkedShiftId === next.id ||
+        (!task.linkedShiftId && recognizePreparationActivity(task.title)))
+    )
+      retainedPreparationEnd = Math.max(
+        retainedPreparationEnd,
+        reservation.end,
       );
   }
   const rowPlacements: TaskPlacement[] = [];
@@ -814,7 +863,22 @@ export function planPreparation(
         { sleep: 0, windDown: 1, shower: 2 }[
           recognizePreparationActivity(b.task.title) as
             "sleep" | "windDown" | "shower"
-        ] || a.task.id.localeCompare(b.task.id),
+        ] ||
+      Number(
+        !(
+          fixedTask(a.task) ||
+          a.task.preparationAutoStart !== true ||
+          a.state === "completed"
+        ),
+      ) -
+        Number(
+          !(
+            fixedTask(b.task) ||
+            b.task.preparationAutoStart !== true ||
+            b.state === "completed"
+          ),
+        ) ||
+      a.task.id.localeCompare(b.task.id),
   );
   let routineCutoff = windStart ?? bedtime ?? dayEnd;
   for (const { task, occurrenceDate, state } of routineOrder) {
@@ -858,10 +922,11 @@ export function planPreparation(
           task.travelMinutes,
           Math.max(
             dayStart,
+            retainedPreparationEnd,
             window.start,
             now >= dayStart && now < dayEnd ? now : dayStart,
           ),
-          blocked,
+          blocked.filter((b) => b.taskId !== task.id),
         );
       } catch {
         start = null;
@@ -998,10 +1063,10 @@ export function planPreparation(
         );
       }
     }
-    if (!inactive(state))
+    if (state !== "skipped" && state !== "deferred")
       conflicts.push(
         ...blocked
-          .filter((b) => intersects(b, interval))
+          .filter((b) => b.taskId !== task.id && intersects(b, interval))
           .map((b) => `Overlaps ${b.label}.`),
       );
     const p: TaskPlacement = {
@@ -1014,11 +1079,41 @@ export function planPreparation(
     };
     rowPlacements.push(p);
     append(task, p, state, occurrenceDate);
-    if (!inactive(state)) {
-      block(interval.start, interval.end, `bedtime activity: ${task.title}`);
-      if (kind !== "sleep") routineCutoff = Math.min(routineCutoff, start);
+    if (state !== "skipped" && state !== "deferred") {
+      block(
+        interval.start,
+        interval.end,
+        `bedtime activity: ${task.title}`,
+        task.id,
+      );
+      if (kind !== "sleep")
+        routineCutoff = Math.min(routineCutoff, interval.start);
     }
   }
+  const coordinatedContext = {
+    ...calculation.taskContext,
+    reserved: [
+      ...completedReservations,
+      ...rowPlacements.flatMap((p) => {
+        const task = selected.find((t) => t.id === p.taskId);
+        const state = occurrences.find((o) => o.task.id === p.taskId)?.state;
+        return task &&
+          p.start !== null &&
+          p.end !== null &&
+          state !== "skipped" &&
+          state !== "deferred" &&
+          state !== "completed"
+          ? [
+              {
+                start: p.start - task.travelMinutes * MINUTE,
+                end: p.end,
+                label: `bedtime activity: ${task.title}`,
+              },
+            ]
+          : [];
+      }),
+    ],
+  };
   const normalCandidates = selected
     .filter((t) => !bedtimeActivity(t) || chosenOnShiftDate(t))
     .map((task) => {
@@ -1066,7 +1161,7 @@ export function planPreparation(
     calculation.settings,
     schedulerClock,
     horizon,
-    calculation.taskContext,
+    coordinatedContext,
   );
   const mealBusy: Interval[] = [
     ...blocked,
@@ -1142,7 +1237,7 @@ export function planPreparation(
           calculation.settings,
           schedulerClock,
           horizon,
-          calculation.taskContext,
+          coordinatedContext,
         ).find((p) => p.taskId === task.id) ?? {
           taskId: task.id,
           start: null,
@@ -1316,6 +1411,56 @@ export function planPreparation(
     }
     if (p) rowPlacements.push(p);
     append(task, p, state, occurrenceDate);
+  }
+  // Review the final schedule as a whole, including retained completed history.
+  // Do not rewrite a recorded/manual time to conceal an existing collision.
+  const timedTasks = result.rows.filter(
+    (r) =>
+      r.taskId &&
+      r.at !== null &&
+      r.end !== null &&
+      r.status !== "skipped" &&
+      r.status !== "deferred",
+  );
+  for (let i = 0; i < timedTasks.length; i++) {
+    const left = timedTasks[i];
+    const leftTask = selected.find((t) => t.id === left.taskId)!;
+    for (const right of timedTasks.slice(i + 1)) {
+      if (left.taskId === right.taskId) continue;
+      const rightTask = selected.find((t) => t.id === right.taskId)!;
+      if (
+        !intersects(
+          {
+            start: left.at! - leftTask.travelMinutes * MINUTE,
+            end: left.end!,
+            label: left.label,
+          },
+          {
+            start: right.at! - rightTask.travelMinutes * MINUTE,
+            end: right.end!,
+            label: right.label,
+          },
+        )
+      )
+        continue;
+      for (const [row, other] of [
+        [left, right],
+        [right, left],
+      ]) {
+        const warning = `Overlaps “${other.label}”. Both tasks need separate time; review the retained times.`;
+        row.conflict = unique([
+          ...(row.conflict ? [row.conflict] : []),
+          warning,
+        ]).join(" ");
+        if (row.status !== "completed") row.status = "conflict";
+        const placement = rowPlacements.find(
+          (p) =>
+            p.taskId === row.taskId && p.occurrenceDate === row.occurrenceDate,
+        );
+        if (placement) placement.conflict = row.conflict;
+        result.conflicts.push(`“${row.label}”: ${warning}`);
+      }
+    }
   }
   const addStage = (
     kind: string,

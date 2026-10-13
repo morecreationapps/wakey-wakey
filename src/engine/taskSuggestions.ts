@@ -415,6 +415,23 @@ function suggest(
     placement = scheduled.placements.find((p) => p.taskId === id);
   let conflict =
     row?.conflict ?? (placement?.start === null ? placement.reason : undefined);
+  const displaced = scheduled.rows.filter(
+    (r) =>
+      r.taskId &&
+      r.taskId !== id &&
+      r.at === null &&
+      !["completed", "skipped", "deferred"].includes(r.status) &&
+      current.rows.some(
+        (before) => before.taskId === r.taskId && before.at !== null,
+      ),
+  );
+  if (displaced.length)
+    conflict = [
+      conflict,
+      `There is not enough room for every task before the bedtime routine. Adding this activity leaves ${[...new Set(displaced.map((r) => `“${r.label}”`))].join(", ")} without an available time. Review durations, commitments or the chosen activity before saving.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
   // The final preparation pass can move other automatic activities to make
   // room for a dependency. Use its result before deciding the draft has no slot.
   if (explicit === undefined) {
@@ -434,6 +451,7 @@ function suggest(
     }
     if (
       !settings.restWake &&
+      (wind === undefined || bed === undefined) &&
       !entries.some((e) => e.date === date && e.status === "Work")
     )
       missing.push(

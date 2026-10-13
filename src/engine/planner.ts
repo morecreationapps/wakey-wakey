@@ -60,6 +60,9 @@ export interface PreparationTaskContext {
   /** Place automatic preparation near the bedtime routine, even when all
    * rest-day sleep inputs are already complete. This does not relax safety. */
   preferLatest?: boolean;
+  /** Shared preparation reservations, including completed recorded slots and
+   * routine activities scheduled before the ordinary task pass. */
+  reserved?: { start: number; end: number; label: string }[];
 }
 interface Interval {
   start: number;
@@ -1113,6 +1116,9 @@ export function planTasks(
   const block = (start: number, end: number, label: string) => {
     if (end > start) busy.push({ start, end, label });
   };
+  for (const interval of preparationContext?.reserved ?? [])
+    if (Number.isFinite(interval.start) && Number.isFinite(interval.end))
+      block(interval.start, interval.end, interval.label);
   const unclear = (date: string, text: string) =>
     uncertain.set(date, unique([...(uncertain.get(date) ?? []), text]));
   const unclearRecovery = (

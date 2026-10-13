@@ -401,7 +401,8 @@ describe("separate sleep preferences for the night before a shift", () => {
       }),
       before = JSON.stringify(booking);
     const { v } = savedSuggestion("Shower for bed", entries, s, [booking]);
-    expect(v.earliest).toBe("2026-10-09T21:30");
+    expect(v.earliest).toBe("");
+    expect(v.conflict).toMatch(/slot|fit/i);
     const manual = savedSuggestion("Shower for bed", entries, s, [booking], {
       minutes: 25,
       earliest: "2026-10-09T21:17",

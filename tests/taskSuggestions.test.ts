@@ -228,8 +228,8 @@ describe("task-aware day-before suggestions", () => {
         s,
         clock(),
       )!;
-    expect(v.earliest).toBe("2026-10-09T18:30");
-    expect(v.conflict).toBeUndefined();
+    expect(v.earliest).toBe("");
+    expect(v.conflict).toMatch(/slot|fit/i);
     const shower = base("shower", "Shower for bed", {
         ...v,
         deadline: "2026-10-09T23:59",
@@ -240,9 +240,7 @@ describe("task-aware day-before suggestions", () => {
     expect(p.rows.find((r) => r.taskId === fixed.id)?.at).toBe(
       zonedEpoch("2026-10-09T19:00", zone),
     );
-    expect(p.rows.find((r) => r.taskId === shower.id)?.end).toBe(
-      p.rows.find((r) => r.taskId === fixed.id)?.at,
-    );
+    expect(p.rows.find((r) => r.taskId === shower.id)?.at).toBeNull();
     expect(p.shiftPlan).toEqual(planShift(entry, s, entries, [fixed, shower]));
   });
   it("retains an entered bedtime task timestamp when missing wake inputs prevent reviewing the routine", () => {
@@ -508,7 +506,7 @@ describe("task-aware day-before suggestions", () => {
       expect(timed[i - 1].end! <= timed[i].at!).toBe(true);
     expect(JSON.stringify(tasks)).toBe(before);
   });
-  it("moves a shower suggestion earlier around a saved fixed haircut and never changes the appointment", () => {
+  it("leaves a shower unscheduled when it cannot follow the fixed haircut before wind-down", () => {
     const entry = shift(),
       s = settings(),
       appointment = base("appointment", "Haircut", {
@@ -524,7 +522,8 @@ describe("task-aware day-before suggestions", () => {
       { suggestion, task } = suggested("Shower for bed", entry, s, [
         appointment,
       ]);
-    expect(suggestion.earliest).toBe("2026-10-09T18:30");
+    expect(suggestion.earliest).toBe("");
+    expect(suggestion.conflict).toMatch(/slot|fit/i);
     const plan = planPreparation(
       [rest("2026-10-09"), entry],
       [appointment, task],
@@ -763,7 +762,7 @@ describe("task-aware day-before suggestions", () => {
     ).toBe("2026-10-09T21:45");
     expect(JSON.stringify([meal, shower])).toBe(saved);
   });
-  it("retains a deliberate manual meal start and a fixed appointment while flagging a new shower overlap", () => {
+  it("retains a deliberate manual meal and fixed appointment without giving a new shower an overlapping time", () => {
     const entry = shift("Late"),
       s = settings(),
       entries = [rest("2026-10-09"), entry];
@@ -785,7 +784,11 @@ describe("task-aware day-before suggestions", () => {
       plan = planPreparation(entries, [meal, shower, appointment], s, clock());
     const row = plan.rows.find((r) => r.taskId === meal.id)!;
     expect(localAt(row.at!, zone)).toBe("2026-10-09T22:00");
-    expect(row.conflict).toContain("Shower for bed");
+    expect(row.conflict).toBeUndefined();
+    expect(plan.rows.find((r) => r.taskId === shower.id)?.at).toBeNull();
+    expect(plan.rows.find((r) => r.taskId === shower.id)?.conflict).toMatch(
+      /slot|fit/i,
+    );
     expect(
       localAt(plan.rows.find((r) => r.taskId === "booking")!.at!, zone),
     ).toBe("2026-10-09T11:00");
