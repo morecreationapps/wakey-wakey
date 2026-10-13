@@ -11,7 +11,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.morecreationapps.wakeywakey",
       "appleTeamId": "B87H989596",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],

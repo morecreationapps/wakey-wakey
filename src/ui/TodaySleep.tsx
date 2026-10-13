@@ -644,7 +644,7 @@ export function Today({
         <Pill text="YOUR ACCOUNT" />
       </Row>
       <View style={rowStyle}>
-        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0, padding: 26 }}>
+        <Card style={{ flexGrow: wide ? 1 : undefined, flexShrink: wide ? 1 : undefined, flexBasis: wide ? 0 : undefined, minWidth: 0, padding: 26 }}>
           <Row style={{ justifyContent: "space-between" }}>
             <Label>
               {current
@@ -720,7 +720,7 @@ export function Today({
             onPress={() => navigate("Rota")}
           />
         </Card>
-        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+        <Card style={{ flexGrow: wide ? 1 : undefined, flexShrink: wide ? 1 : undefined, flexBasis: wide ? 0 : undefined, minWidth: 0 }}>
           <Row>
             <Icon name="check-square" />
             <Heading small>Prepare for my next shift</Heading>
@@ -840,7 +840,7 @@ export function Today({
         </Card>
       </View>
       <View style={rowStyle}>
-        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+        <Card style={{ flexGrow: wide ? 1 : undefined, flexShrink: wide ? 1 : undefined, flexBasis: wide ? 0 : undefined, minWidth: 0 }}>
           <Row style={{ justifyContent: "space-between" }}>
             <Heading small>Shift Transition</Heading>
             <Icon name="shuffle" />
@@ -900,7 +900,7 @@ export function Today({
             </>
           )}
         </Card>
-        <Card style={{ flex: wide ? 1 : undefined, minWidth: 0 }}>
+        <Card style={{ flexGrow: wide ? 1 : undefined, flexShrink: wide ? 1 : undefined, flexBasis: wide ? 0 : undefined, minWidth: 0 }}>
           <Row style={{ justifyContent: "space-between" }}>
             <Heading small>Shift Plan</Heading>
             <Icon name="clock" />

@@ -6,6 +6,9 @@ import { homedir } from "node:os";
 import { checkPublicSource } from "./check-public-build.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const { expo: appConfig } = JSON.parse(readFileSync(join(root, "app.json"), "utf8"));
+const version = appConfig.version;
+const buildNumber = appConfig.ios.buildNumber;
 const target = process.argv[2];
 if (!["ios", "macos", "simulator", "android"].includes(target)) {
   throw new Error("Choose ios, macos, simulator or android.");
@@ -87,7 +90,7 @@ if (target === "android") {
   else
     args.push(
       "-archivePath",
-      join(output, `WakeyWakey-${target}-1.0.0-1.xcarchive`),
+      join(output, `WakeyWakey-${target}-${version}-${buildNumber}.xcarchive`),
       "-allowProvisioningUpdates",
       ...(target === "macos"
         ? ["MACOSX_DEPLOYMENT_TARGET=13.4", "IPHONEOS_DEPLOYMENT_TARGET=16.4"]
@@ -96,7 +99,7 @@ if (target === "android") {
     );
 }
 console.log(
-  `Building ${target}; version 1.0.0 (1), published account service configured.`,
+  `Building ${target}; version ${version} (${target === "android" ? appConfig.android.versionCode : buildNumber}), published account service configured.`,
 );
 const result = spawnSync(command, args, { cwd: root, env, stdio: "inherit" });
 if (result.error) throw result.error;
