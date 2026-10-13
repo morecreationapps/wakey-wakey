@@ -783,6 +783,11 @@ export function planPreparation(
         ? [{ start: p.start, end: p.end }]
         : []);
     if (!parts.length) {
+      const conflict =
+        p?.conflict ??
+        (!inactive(state) && p?.reason.startsWith("No permitted")
+          ? p.reason
+          : undefined);
       result.rows.push({
         id: `task:${task.id}:${occurrenceDate ?? "once"}`,
         label: task.title,
@@ -790,17 +795,13 @@ export function planPreparation(
         at: null,
         end: null,
         minutes: task.minutes,
-        status: inactive(state)
-          ? state
-          : p?.conflict
-            ? "conflict"
-            : "needs-input",
+        status: inactive(state) ? state : conflict ? "conflict" : "needs-input",
         why:
           p?.reason ??
           `Saved as ${state}; no scheduled time has been recorded.`,
         taskId: task.id,
         ...(occurrenceDate ? { occurrenceDate } : {}),
-        ...(p?.conflict ? { conflict: p.conflict } : {}),
+        ...(conflict ? { conflict } : {}),
       });
       if (!inactive(state)) {
         const reason = p?.reason ?? "Choose a preparation time.";

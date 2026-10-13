@@ -43,7 +43,7 @@ export function applyTaskSuggestion(
     !explicitTime &&
     result.preparationAutoStart !== false &&
     !!result.linkedShiftId &&
-    !!result.scheduledStart;
+    (!!result.scheduledStart || !!suggestion.preparationDate);
   return taskTimeProvenance(
     autoStart ? { ...result, preparationAutoStart: true } : result,
     explicitTime,
@@ -84,7 +84,12 @@ export function taskDraftTiming(
   }
   return {
     date: start ? start.slice(0, 10) : preparationDate || "",
-    time: start ? start.slice(11, 16) : "",
+    time:
+      task.preparationAutoStart === true && !task.scheduledStart
+        ? ""
+        : start
+          ? start.slice(11, 16)
+          : "",
   };
 }
 
@@ -181,7 +186,11 @@ export function withOptionalTaskField(
 }
 
 /** Validate explicit fields and derive neutral bounds for unused optional controls. */
-export function taskForSaving(value: Task, timezone: string): Task {
+export function taskForSaving(
+  value: Task,
+  timezone: string,
+  preparation?: { date: string; timezone: string },
+): Task {
   const draft = taskTimeProvenance(value);
   if (!draft.title.trim()) throw Error("Give the task a name.");
   if (
@@ -195,7 +204,33 @@ export function taskForSaving(value: Task, timezone: string): Task {
     throw Error(
       "Enter a positive duration of 1–1440 minutes and a travel allowance of 0–1440 minutes.",
     );
-  const earliest = draft.earliest || draft.scheduledStart || "";
+  let earliest = draft.earliest || draft.scheduledStart || "";
+  let preparationEnd: string | undefined;
+  if (
+    !draft.scheduledStart &&
+    preparation?.date &&
+    draft.linkedShiftId &&
+    draft.preparationAutoStart === true &&
+    draft.kind !== "fixed" &&
+    !draft.locked &&
+    draft.movable
+  ) {
+    // A date-only automatic task stores the day's scheduling bounds, never a
+    // fabricated midnight appointment. Its actual start stays null until it fits.
+    const date = Temporal.PlainDate.from(preparation.date);
+    earliest = taskDraftStartValue(
+      date.toString(),
+      "00:00",
+      preparation.timezone,
+      timezone,
+    );
+    preparationEnd = taskDraftStartValue(
+      date.add({ days: 1 }).toString(),
+      "00:00",
+      preparation.timezone,
+      timezone,
+    );
+  }
   if (!earliest) throw Error("Choose a start date and time for this task.");
   const from = zonedEpoch(earliest, timezone);
   const omittedFields = new Set(draft.omittedFields);
@@ -208,11 +243,12 @@ export function taskForSaving(value: Task, timezone: string): Task {
       ? Temporal.PlainDateTime.from(draft.scheduledStart)
       : start;
     const taskEnd = occupiedStart.add({ minutes: draft.minutes });
-    deadline = (
-      Temporal.PlainDateTime.compare(taskEnd, endOfDate) > 0
+    deadline =
+      preparationEnd ??
+      (Temporal.PlainDateTime.compare(taskEnd, endOfDate) > 0
         ? taskEnd
         : endOfDate
-    ).toString({ smallestUnit: "minute" });
+      ).toString({ smallestUnit: "minute" });
   } else omittedFields.delete("deadline");
   if (zonedEpoch(deadline, timezone) < from)
     throw Error("Deadline must follow earliest time.");

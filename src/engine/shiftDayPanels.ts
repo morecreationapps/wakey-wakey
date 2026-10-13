@@ -170,7 +170,27 @@ export function shiftDayPanels(
   }
 
   for (const row of taskRows) {
-    const target = destination(row);
+    let target = destination(row);
+    const task = savedTasks.get(row.taskId!);
+    if (
+      !target &&
+      row.at === null &&
+      task?.linkedShiftId === entry.id &&
+      task.preparationAutoStart === true &&
+      !task.scheduledStart &&
+      !["completed", "skipped", "deferred"].includes(row.status)
+    ) {
+      // A known preparation date can be displayed without fabricating a time.
+      // Keep this unscheduled task with its warning beside the day it belongs to.
+      try {
+        const date =
+          row.occurrenceDate ??
+          dateOf(zonedEpoch(task.earliest, settings.timezone));
+        if (date === result.preparationDate) target = result.transitionRows;
+      } catch {
+        // An invalid or unknown date still belongs in the general review list.
+      }
+    }
     if (!target) {
       result.reviewRows.push(row);
       continue;

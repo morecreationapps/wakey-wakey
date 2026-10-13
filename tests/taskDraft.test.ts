@@ -162,6 +162,89 @@ describe("editable task suggestions", () => {
 });
 
 describe("optional task fields and saved appointments", () => {
+  it("saves a date-only automatic preparation task without inventing a clock", () => {
+    const draft = applyTaskSuggestion(
+      task({ earliest: "", scheduledStart: null }),
+      {
+        ...task({ earliest: "", scheduledStart: null }),
+        preparationDate: "2026-10-09",
+      },
+      new Set(),
+    );
+    expect(draft.preparationAutoStart).toBe(true);
+    const saved = taskForSaving(draft, "Europe/London", {
+      date: "2026-10-09",
+      timezone: "Europe/London",
+    });
+    expect(saved.earliest).toBe("2026-10-09T00:00");
+    expect(saved.deadline).toBe("2026-10-10T00:00");
+    expect(saved.scheduledStart).toBeNull();
+    expect(taskDraftTiming(taskForEditing(saved))).toEqual({
+      date: "2026-10-09",
+      time: "",
+    });
+    expect(taskForSaving(taskForEditing(saved), "Europe/London")).toEqual(
+      saved,
+    );
+  });
+
+  it("stores both date-only bounds in the selected shift's timezone", () => {
+    const saved = taskForSaving(
+      task({ earliest: "", scheduledStart: null, preparationAutoStart: true }),
+      "Europe/London",
+      { date: "2026-10-09", timezone: "America/New_York" },
+    );
+    expect(saved.earliest).toBe("2026-10-09T05:00");
+    expect(saved.deadline).toBe("2026-10-10T05:00");
+    expect(
+      taskForSaving(taskForEditing(saved), "Europe/London", {
+        date: "2026-10-09",
+        timezone: "America/New_York",
+      }),
+    ).toEqual(saved);
+    expect(
+      taskDraftTiming(saved, undefined, "Europe/London", "America/New_York"),
+    ).toEqual({ date: "2026-10-09", time: "" });
+  });
+
+  it.each([
+    { kind: "fixed" as const },
+    { locked: true },
+    { movable: false },
+    { preparationAutoStart: false },
+    { linkedShiftId: undefined },
+  ])(
+    "still requires a chosen clock for a non-automatic commitment %s",
+    (patch) => {
+      expect(() =>
+        taskForSaving(
+          task({
+            earliest: "",
+            scheduledStart: null,
+            preparationAutoStart: true,
+            ...patch,
+          }),
+          "Europe/London",
+          { date: "2026-10-09", timezone: "Europe/London" },
+        ),
+      ).toThrow(/start date and time/);
+    },
+  );
+
+  it("rejects an invalid date for an unscheduled preparation task", () => {
+    expect(() =>
+      taskForSaving(
+        task({
+          earliest: "",
+          scheduledStart: null,
+          preparationAutoStart: true,
+        }),
+        "Europe/London",
+        { date: "2026-02-30", timezone: "Europe/London" },
+      ),
+    ).toThrow();
+  });
+
   it("saves an otherwise complete preparation task without requiring irrelevant appointment fields", () => {
     const saved = taskForSaving(task(), "Europe/London");
     expect(saved.deadline).toBe("2026-10-10T00:00");

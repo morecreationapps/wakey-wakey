@@ -3,6 +3,7 @@ import { newSettings } from "../src/data/defaults";
 import { Clock, RotaEntry, Settings, Task } from "../src/model";
 import { planPreparation } from "../src/engine/preparation";
 import { planShift } from "../src/engine/planner";
+import { shiftDayPanels } from "../src/engine/shiftDayPanels";
 import {
   suggestPreparationTask,
   defaultPreparationTaskStart,
@@ -184,6 +185,36 @@ function noOverlaps(plan: ReturnType<typeof planPreparation>) {
 }
 
 describe("one coordinated preparation schedule", () => {
+  it("saves an unscheduled meal once with its conflict, then schedules it when space is available", () => {
+    const { s, rota } = tight();
+    const iron = draft("Iron work clothes", [], s, rota).save();
+    const mealDraft = draft("Last meal before bed", [iron], s, rota);
+    expect(mealDraft.v.scheduledStart).toBeNull();
+    const meal = taskForSaving(
+      task("meal", "Last meal before bed", mealDraft.v),
+      zone,
+      { date: mealDraft.v.preparationDate, timezone: zone },
+    );
+    const plan = planPreparation(rota, [iron, meal], s, clock);
+    const meals = plan.rows.filter((r) => r.taskId === "meal");
+    expect(meals).toHaveLength(1);
+    expect(meals[0].at).toBeNull();
+    expect(meals[0].conflict).toMatch(/No permitted.*meal slot/);
+    const panels = shiftDayPanels(plan, [iron, meal], s);
+    expect(
+      panels.transitionRows.filter((r) => r.taskId === "meal"),
+    ).toHaveLength(1);
+    expect(panels.shiftRows.some((r) => r.taskId === "meal")).toBe(false);
+    expect(panels.reviewRows.some((r) => r.taskId === "meal")).toBe(false);
+    expect(plan.rows.find((r) => r.taskId === iron.id)?.at).not.toBeNull();
+    noOverlaps(plan);
+    const freePlan = planPreparation(entries(), [meal], settings(), clock);
+    expect(freePlan.rows.find((r) => r.taskId === "meal")?.at).not.toBeNull();
+    expect(freePlan.rows.find((r) => r.taskId === "meal")?.at).not.toBe(
+      zonedEpoch("2026-10-09T00:00", zone),
+    );
+  });
+
   it.each([false, true])(
     "coordinates ironing and shower in either addition order before the %s shift",
     (late) => {

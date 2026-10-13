@@ -207,7 +207,15 @@ export function Plan({ state, change, notify }: ScreenProps) {
         : undefined,
     );
     baselineDraft.current = draft;
-    setDraftDate(taskDraftTiming(draft).date);
+    setDraftDate(
+      taskDraftTiming(
+        draft,
+        undefined,
+        s.timezone,
+        state.entries.find((entry) => entry.id === draft.linkedShiftId)
+          ?.timezone ?? s.timezone,
+      ).date,
+    );
     setEdit(draft);
   }
   const action = (t: Task, patch: Partial<Task>, placement?: TaskPlacement) =>
@@ -227,14 +235,19 @@ export function Plan({ state, change, notify }: ScreenProps) {
   function save() {
     if (!edit) return;
     try {
-      const task = taskForSaving(edit, s.timezone);
+      const task = taskForSaving(edit, s.timezone, {
+        date: draftDate,
+        timezone: preparationTimezone,
+      });
       change((a) => ({
         ...a,
         tasks: [...a.tasks.filter((t) => t.id !== task.id), task],
       }));
       setEdit(null);
       notify(
-        "Task saved. Conflicts remain visible; fixed commitments stay fixed.",
+        task.preparationAutoStart && !task.scheduledStart
+          ? "Task saved without a time. Review the conflict in Shift Transition."
+          : "Task saved. Conflicts remain visible; fixed commitments stay fixed.",
       );
     } catch (e) {
       notify((e as Error).message);
@@ -389,13 +402,11 @@ export function Plan({ state, change, notify }: ScreenProps) {
             />
           </Row>
           <Body muted>
-            {!editingSavedTask.current &&
-            (edit.linkedShiftId || (preparationContext.current && next))
+            {edit.linkedShiftId || (preparationContext.current && next)
               ? `Preparation date and start time use ${preparationTimezone}.`
               : `Times use ${s.timezone}.`}
           </Body>
-          {!editingSavedTask.current &&
-          (edit.linkedShiftId || (preparationContext.current && next)) ? (
+          {edit.linkedShiftId || (preparationContext.current && next) ? (
             <Row>
               <DatePickerField
                 label="Preparation date"
