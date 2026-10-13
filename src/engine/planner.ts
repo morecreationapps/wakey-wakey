@@ -175,16 +175,21 @@ export function orderedPreparationRoutines(settings: Settings): Routine[] {
   return ordered;
 }
 
-function preferredBedAfter(
-  end: number,
+/** Keep the usual bedtime attached to the duty's night. If work runs past it,
+ * callers delay sleep until work, travel and wind-down finish; they must not
+ * roll the missed preference forward by another whole day. */
+export function preferredRecoveryBed(
+  entry: RotaEntry,
   preference: string,
-  timezone: string,
 ): number {
-  const date = localAt(end, timezone).slice(0, 10);
-  const sameDate = onDate(date, preference, timezone);
-  return sameDate >= end
+  if (!entry.start)
+    throw new RangeError("A duty start is needed for recovery.");
+  const start = zonedEpoch(entry.start, entry.timezone, entry.disambiguation);
+  const date = localAt(start, entry.timezone).slice(0, 10);
+  const sameDate = onDate(date, preference, entry.timezone);
+  return sameDate >= start
     ? sameDate
-    : onDate(addDays(date, 1), preference, timezone);
+    : onDate(addDays(date, 1), preference, entry.timezone);
 }
 
 function fixedOccurrences(
@@ -271,10 +276,7 @@ export function minimumUnconfirmedRecovery(
       settings.windDown!) *
       MINUTE;
   if (entry.category === "Late" && settings.lateBed)
-    bed = Math.max(
-      bed,
-      preferredBedAfter(bounds.end, settings.lateBed, entry.timezone),
-    );
+    bed = Math.max(bed, preferredRecoveryBed(entry, settings.lateBed));
   let end = bed + (settings.latency! + settings.sleepTarget!) * MINUTE;
   if (entry.category === "Late" && settings.lateWake)
     end = Math.max(
@@ -974,11 +976,7 @@ export function transitions(
         const steps: NonNullable<Transition["dailySteps"]> = [];
         try {
           const firstDate = addDays(from.date, 1);
-          const preferredBed = preferredBedAfter(
-            lastEnd,
-            settings.lateBed!,
-            settings.timezone,
-          );
+          const preferredBed = preferredRecoveryBed(from, settings.lateBed!);
           const readyBed =
             lastEnd +
             (settings.returnMinutes! +
@@ -1260,7 +1258,7 @@ export function planTasks(
             try {
               bed = Math.max(
                 bed,
-                preferredBedAfter(bounds.end, settings.lateBed, entry.timezone),
+                preferredRecoveryBed(entry, settings.lateBed),
               );
             } catch {
               unclear(

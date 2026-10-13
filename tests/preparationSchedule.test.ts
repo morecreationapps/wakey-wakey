@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import { newSettings } from "../src/data/defaults";
 import { Clock, RotaEntry, Settings, Task } from "../src/model";
 import { planPreparation } from "../src/engine/preparation";
-import { planShift } from "../src/engine/planner";
+import {
+  minimumUnconfirmedRecovery,
+  planShift,
+  preferredRecoveryBed,
+} from "../src/engine/planner";
 import { shiftDayPanels } from "../src/engine/shiftDayPanels";
 import {
   suggestPreparationTask,
   defaultPreparationTaskStart,
 } from "../src/engine/taskSuggestions";
-import { taskForSaving, snapshotTaskPlacement } from "../src/ui/taskDraft";
+import {
+  taskForEditing,
+  taskForSaving,
+  snapshotTaskPlacement,
+} from "../src/ui/taskDraft";
 import { localAt, zonedEpoch } from "../src/engine/time";
 
 const zone = "Europe/London";
@@ -185,6 +193,70 @@ function noOverlaps(plan: ReturnType<typeof planPreparation>) {
 }
 
 describe("one coordinated preparation schedule", () => {
+  it.each([false, true])(
+    "releases the saved meal slot after correcting midday bedtime to midnight, with recovery confirmed: %s",
+    (confirmed) => {
+      const { s, rota } = tight();
+      const iron = draft("Iron work clothes", [], s, rota).save();
+      const mealDraft = draft("Last meal before bed", [iron], s, rota);
+      const meal = taskForSaving(
+        task("meal", "Last meal before bed", mealDraft.v),
+        zone,
+        { date: mealDraft.v.preparationDate, timezone: zone },
+      );
+      expect(meal.scheduledStart).toBeNull();
+      const corrected = {
+        ...s,
+        lateBed: "00:30",
+        ...(confirmed ? { returnMinutes: 20, postWorkMinutes: 30 } : {}),
+      };
+      const savedBefore = JSON.stringify([iron, meal]);
+      const plan = planPreparation(rota, [iron, meal], corrected, clock);
+      const mealRows = plan.rows.filter((r) => r.taskId === "meal");
+      expect(mealRows).toHaveLength(1);
+      expect(at(mealRows[0].at)).toBe("19:30");
+      expect(at(mealRows[0].end)).toBe("20:00");
+      expect(at(plan.rows.find((r) => r.taskId === iron.id)!.at)).toBe("20:00");
+      noOverlaps(plan);
+      expect(plan.shiftPlan?.events).toEqual(
+        planShift(rota.at(-1)!, corrected, rota, [iron, meal]).events,
+      );
+      expect(JSON.stringify([iron, meal])).toBe(savedBefore);
+      const panels = shiftDayPanels(plan, [iron, meal], corrected);
+      expect(
+        panels.transitionRows.filter((r) => r.taskId === "meal"),
+      ).toHaveLength(1);
+      expect(panels.shiftRows.some((r) => r.taskId === "meal")).toBe(false);
+      const editPreview = taskForEditing(meal, localAt(mealRows[0].at!, zone));
+      expect(editPreview.scheduledStart).toBe("2026-10-09T19:30");
+      expect(editPreview.deadline).toBe("");
+      expect(editPreview.windowStart).toBe("");
+      expect(editPreview.windowEnd).toBe("");
+    },
+  );
+
+  it.each([
+    [{ overtimeMinutes: 0 }, "2026-10-09T08:30"],
+    [{ overtimeMinutes: 480 }, "2026-10-09T14:56"],
+    [
+      { overtimeMinutes: 480, actualEnd: "2026-10-09T07:00" },
+      "2026-10-09T15:30",
+    ],
+  ])(
+    "keeps midnight recovery on the duty's night and protects full sleep after %j",
+    (patch, expectedEnd) => {
+      const { s, rota } = tight();
+      const prior = { ...rota[0], ...patch };
+      const corrected = { ...s, lateBed: "00:30" };
+      expect(localAt(preferredRecoveryBed(prior, "00:30"), zone)).toBe(
+        "2026-10-09T00:30",
+      );
+      expect(
+        localAt(minimumUnconfirmedRecovery(prior, corrected)!.end, zone),
+      ).toBe(expectedEnd);
+    },
+  );
+
   it("saves an unscheduled meal once with its conflict, then schedules it when space is available", () => {
     const { s, rota } = tight();
     const iron = draft("Iron work clothes", [], s, rota).save();

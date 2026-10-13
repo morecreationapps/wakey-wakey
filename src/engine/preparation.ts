@@ -15,6 +15,7 @@ import {
   TaskPlacement,
   workBounds,
   minimumUnconfirmedRecovery,
+  preferredRecoveryBed,
   UNCONFIRMED_RECOVERY_WARNING,
 } from "./planner";
 import {
@@ -622,20 +623,11 @@ export function planPreparation(
               settings.postWorkMinutes! +
               settings.windDown!) *
               MINUTE;
-          if (entry.category === "Late" && settings.lateBed) {
-            let preferred = onDate(
-              localAt(bounds.end, entry.timezone).slice(0, 10),
-              settings.lateBed,
-              entry.timezone,
+          if (entry.category === "Late" && settings.lateBed)
+            recoveryBed = Math.max(
+              recoveryBed,
+              preferredRecoveryBed(entry, settings.lateBed),
             );
-            if (preferred < bounds.end)
-              preferred = onDate(
-                addDays(localAt(bounds.end, entry.timezone).slice(0, 10), 1),
-                settings.lateBed,
-                entry.timezone,
-              );
-            recoveryBed = Math.max(recoveryBed, preferred);
-          }
           let recoveryEnd =
             recoveryBed + (settings.latency! + settings.sleepTarget!) * MINUTE;
           if (entry.category === "Late" && settings.lateWake)
