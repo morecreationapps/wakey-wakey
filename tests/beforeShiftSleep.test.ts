@@ -3,8 +3,15 @@ import { newSettings } from "../src/data/defaults";
 import { Clock, RotaEntry, Settings, Task } from "../src/model";
 import { beforeShiftSleepPreferences } from "../src/engine/beforeShiftSleep";
 import { planPreparation } from "../src/engine/preparation";
-import { planShift, planTasks } from "../src/engine/planner";
-import { suggestPreparationTask } from "../src/engine/taskSuggestions";
+import {
+  minimumUnconfirmedRecovery,
+  planShift,
+  planTasks,
+} from "../src/engine/planner";
+import {
+  defaultPreparationTaskStart,
+  suggestPreparationTask,
+} from "../src/engine/taskSuggestions";
 import { addDays, localAt, MINUTE, zonedEpoch } from "../src/engine/time";
 
 const zone = "Europe/London";
@@ -129,6 +136,192 @@ const savedSuggestion = (
     }),
   };
 };
+
+describe("editable preparation after an extended late duty with incomplete recovery inputs", () => {
+  const fixture = (
+    patch: Partial<Settings> = {},
+    priorPatch: Partial<RotaEntry> = {},
+  ) => {
+    const prior = shift("Late", "2026-10-12", {
+        overtimeMinutes: 480,
+        ...priorPatch,
+      }),
+      next = shift("Early", "2026-10-14"),
+      entries = [prior, unknown("2026-10-13"), next],
+      s = settings({
+        returnMinutes: null,
+        postWorkMinutes: null,
+        lateBed: "12:30",
+        lateWake: "08:30",
+        consistentWake: true,
+        ...patch,
+      }),
+      now = clock("2026-10-13T09:00");
+    return { prior, next, entries, s, now };
+  };
+  it.each([
+    ["Lay out clothes", "20:20"],
+    ["Shower for bed", "20:00"],
+    ["Last meal before bed", "20:00"],
+    ["Wind down", "20:30"],
+    ["Go to sleep", "21:30"],
+  ])(
+    "fills %s with %s and a concise recovery review, preserving the full known sleep period",
+    (title, expected) => {
+      const { prior, next, entries, s, now } = fixture(),
+        before = JSON.stringify({ entries, s }),
+        v = suggestPreparationTask(
+          title,
+          entries,
+          [],
+          s,
+          now,
+          { id: title },
+          next,
+        )!;
+      expect(localAt(minimumUnconfirmedRecovery(prior, s)!.end, zone)).toBe(
+        "2026-10-13T20:00",
+      );
+      expect(v.scheduledStart).toBe(`2026-10-13T${expected}`);
+      expect(v.conflict).toBe(
+        "Check this time: return travel and recovery after your previous shift are unconfirmed.",
+      );
+      const task = base(title, title, {
+          ...v,
+          deadline: "2026-10-13T23:59",
+          windowStart: "00:00",
+          windowEnd: "00:00",
+        }),
+        plan = planPreparation(entries, [task], s, now, {
+          selectedShift: next,
+        }),
+        row = plan.rows.find((r) => r.taskId === title)!;
+      expect(localAt(row.at!, zone)).toBe(v.scheduledStart);
+      expect(row.conflict).toContain(
+        "recovery after your previous shift are unconfirmed",
+      );
+      expect(plan.shiftPlan).toEqual(planShift(next, s, entries, [task]));
+      expect(JSON.stringify({ entries, s })).toBe(before);
+    },
+  );
+  it("applies to arbitrary written preparation but leaves the general and unlinked planners strict", () => {
+    const { next, entries, s, now } = fixture(),
+      v = defaultPreparationTaskStart(
+        entries,
+        [],
+        s,
+        now,
+        { id: "other", title: "Check bag straps", minutes: 15 },
+        next,
+      )!,
+      task = base("other", "Check bag straps", {
+        ...v,
+        deadline: "2026-10-13T23:59",
+        windowStart: "00:00",
+        windowEnd: "00:00",
+      });
+    expect(v.scheduledStart).toBe("2026-10-13T20:15");
+    expect(v.conflict).toContain(
+      "recovery after your previous shift are unconfirmed",
+    );
+    expect(
+      planTasks([task], entries, s, now).find((p) => p.taskId === "other")
+        ?.start,
+    ).toBeNull();
+    expect(
+      planTasks([{ ...task, linkedShiftId: undefined }], entries, s, now, 2, {
+        beforeShiftId: next.id,
+        preferLatest: true,
+      }).find((p) => p.taskId === "other")?.start,
+    ).toBeNull();
+  });
+  it("keeps a fixed appointment and its travel while moving the proposed task earlier", () => {
+    const { next, entries, s, now } = fixture({
+        lateBed: null,
+        lateWake: null,
+      }),
+      booking = base("booking", "Fixed commitment", {
+        kind: "fixed",
+        earliest: "2026-10-13T20:00",
+        scheduledStart: "2026-10-13T20:00",
+        deadline: "2026-10-13T23:59",
+        minutes: 30,
+        travelMinutes: 10,
+        movable: false,
+        locked: true,
+        linkedShiftId: next.id,
+      }),
+      before = JSON.stringify(booking),
+      v = suggestPreparationTask(
+        "Lay out clothes",
+        entries,
+        [booking],
+        s,
+        now,
+        {},
+        next,
+      )!;
+    expect(v.scheduledStart).toBe("2026-10-13T19:40");
+    expect(v.conflict).toContain(
+      "recovery after your previous shift are unconfirmed",
+    );
+    expect(JSON.stringify(booking)).toBe(before);
+  });
+  it("leaves a forty-five-minute task blank when the entered recovery only leaves thirty minutes before wind-down", () => {
+    const { next, entries, s, now } = fixture(),
+      v = defaultPreparationTaskStart(
+        entries,
+        [],
+        s,
+        now,
+        { title: "Prepare paperwork", minutes: 45 },
+        next,
+      )!;
+    expect(v.scheduledStart).toBeNull();
+    expect(v.earliest).toBe("");
+    expect(v.conflict).toBeTruthy();
+  });
+  it.each(["Lay out clothes", "Shower for bed", "Wind down", "Go to sleep"])(
+    "leaves %s blank if even the known full recovery period consumes the proposed routine",
+    (title) => {
+      const { next, entries, s, now } = fixture({ returnMinutes: 480 }),
+        v = suggestPreparationTask(title, entries, [], s, now, {}, next)!;
+      expect(v.scheduledStart).toBeNull();
+      expect(v.earliest).toBe("");
+      expect(v.conflict).toBeTruthy();
+    },
+  );
+  it("does not relax invalid known late-sleep preferences or unrelated availability failures", () => {
+    for (const patch of [
+      { lateBed: "invalid" },
+      { sleepTarget: null },
+      { timezoneConfirmed: false, timezone: "America/Los_Angeles" },
+    ]) {
+      const { next, entries, s, now } = fixture(patch),
+        v = suggestPreparationTask(
+          "Lay out clothes",
+          entries,
+          [],
+          s,
+          now,
+          {},
+          next,
+        )!;
+      expect(v.scheduledStart).toBeNull();
+      expect(v.conflict).toBeTruthy();
+    }
+  });
+  it.each(["Shower for bed", "Wind down", "Go to sleep"])(
+    "keeps %s blank when invalid previous recovery preferences prevent checking its sleep boundary",
+    (title) => {
+      const { next, entries, s, now } = fixture({ lateBed: "invalid" }),
+        v = suggestPreparationTask(title, entries, [], s, now, {}, next)!;
+      expect(v.scheduledStart).toBeNull();
+      expect(v.earliest).toBe("");
+      expect(v.conflict).toContain("previous shift's sleep preferences");
+    },
+  );
+});
 
 describe("separate sleep preferences for the night before a shift", () => {
   it.each([

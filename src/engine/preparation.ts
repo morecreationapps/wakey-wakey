@@ -14,6 +14,8 @@ import {
   ShiftPlan,
   TaskPlacement,
   workBounds,
+  minimumUnconfirmedRecovery,
+  UNCONFIRMED_RECOVERY_WARNING,
 } from "./planner";
 import {
   addDays,
@@ -513,6 +515,7 @@ export function planPreparation(
     windStart = event("windDown")?.at,
     sleepStart = event("sleepStart")?.at;
   const blocked: Interval[] = [];
+  let invalidPreviousRecovery = false;
   const availabilityIssues: string[] =
     next.timezone !== settings.timezone
       ? [
@@ -563,6 +566,29 @@ export function planPreparation(
         `work, travel and recovery (${entry.duty || entry.date})`,
       );
       if (entry.id !== next.id) {
+        const recoveryDate = localAt(bounds.end, next.timezone).slice(0, 10),
+          reviewsPreparationDay =
+            recoveryDate <= preparationDate &&
+            addDays(recoveryDate, 1) >= preparationDate;
+        try {
+          const minimumRecovery = minimumUnconfirmedRecovery(entry, settings);
+          if (minimumRecovery) {
+            block(
+              minimumRecovery.start,
+              minimumRecovery.end,
+              "minimum post-duty recovery and full sleep target",
+            );
+            if (reviewsPreparationDay)
+              availabilityIssues.push(UNCONFIRMED_RECOVERY_WARNING);
+          }
+        } catch {
+          if (reviewsPreparationDay) {
+            invalidPreviousRecovery = true;
+            availabilityIssues.push(
+              "Review the previous shift's sleep preferences before choosing this preparation time.",
+            );
+          }
+        }
         const start =
             p.events.find((e) => e.kind === "windDown")?.at ??
             p.events.find((e) => e.kind === "bedtime")?.at,
@@ -856,6 +882,28 @@ export function planPreparation(
       task.travelMinutes < 0
     )
       start = null;
+    if (
+      start !== null &&
+      task.preparationAutoStart &&
+      !fixedTask(task) &&
+      (invalidPreviousRecovery ||
+        blocked.some(
+          (b) =>
+            b.label === "minimum post-duty recovery and full sleep target" &&
+            intersects(b, {
+              start: start! - task.travelMinutes * MINUTE,
+              end: start! + task.minutes * MINUTE,
+              label: task.title,
+            }),
+        ))
+    ) {
+      start = null;
+      conflicts.push(
+        invalidPreviousRecovery
+          ? "Previous-shift recovery cannot be checked until its sleep preferences are corrected."
+          : "This routine would overlap the previous shift's minimum recovery and full sleep period.",
+      );
+    }
     if (bedtime === undefined || windStart === undefined) {
       if (
         start !== null &&

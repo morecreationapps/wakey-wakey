@@ -65,6 +65,8 @@ interface Interval {
   start: number;
   end: number;
   label: string;
+  /** Only automatic preparation may preview this uncertain recovery day. */
+  recoveryReviewDate?: string;
 }
 const finiteMinutes = (n: number | null | undefined): n is number =>
   n !== null && n !== undefined && Number.isFinite(n) && n >= 0;
@@ -236,6 +238,51 @@ export function workBounds(
       "Finish must follow start; record the next date for an overnight duty.",
     );
   return { start, end };
+}
+
+export const UNCONFIRMED_RECOVERY_WARNING =
+  "Check this time: return travel and recovery after your previous shift are unconfirmed.";
+
+/** A lower bound, never a confirmed wake time: omitted travel/recovery lengths
+ * stay unknown while every known duration and the full sleep target are kept. */
+export function minimumUnconfirmedRecovery(
+  entry: RotaEntry,
+  settings: Settings,
+) {
+  const bounds = workBounds(entry);
+  if (
+    !bounds ||
+    (entry.category !== "Late" &&
+      entry.category !== "Night" &&
+      localAt(bounds.end, entry.timezone).slice(0, 10) <= entry.date) ||
+    (finiteMinutes(settings.returnMinutes) &&
+      finiteMinutes(settings.postWorkMinutes)) ||
+    !validSleepTarget(settings.sleepTarget) ||
+    ![settings.latency, settings.windDown].every(finiteMinutes)
+  )
+    return null;
+  let bed =
+    bounds.end +
+    ((finiteMinutes(settings.returnMinutes) ? settings.returnMinutes : 0) +
+      (finiteMinutes(settings.postWorkMinutes) ? settings.postWorkMinutes : 0) +
+      settings.windDown!) *
+      MINUTE;
+  if (entry.category === "Late" && settings.lateBed)
+    bed = Math.max(
+      bed,
+      preferredBedAfter(bounds.end, settings.lateBed, entry.timezone),
+    );
+  let end = bed + (settings.latency! + settings.sleepTarget!) * MINUTE;
+  if (entry.category === "Late" && settings.lateWake)
+    end = Math.max(
+      end,
+      onDate(
+        localAt(end, entry.timezone).slice(0, 10),
+        settings.lateWake,
+        entry.timezone,
+      ),
+    );
+  return { start: bounds.end, end };
 }
 
 /** Reject overlapping included activities rather than silently counting them twice. */
@@ -1061,12 +1108,35 @@ export function planTasks(
   }
   const busy: Interval[] = [],
     uncertain = new Map<string, string[]>(),
+    recoveryUncertainty = new Map<string, string[]>(),
     result: TaskPlacement[] = [];
   const block = (start: number, end: number, label: string) => {
     if (end > start) busy.push({ start, end, label });
   };
   const unclear = (date: string, text: string) =>
     uncertain.set(date, unique([...(uncertain.get(date) ?? []), text]));
+  const unclearRecovery = (
+    date: string,
+    text: string,
+    matchingTimezone: boolean,
+  ) => {
+    unclear(date, text);
+    if (
+      matchingTimezone &&
+      date === latestPreparationDate &&
+      validSleepTarget(settings.sleepTarget) &&
+      [settings.latency, settings.windDown].every(finiteMinutes)
+    )
+      recoveryUncertainty.set(date, [
+        ...(recoveryUncertainty.get(date) ?? []),
+        text,
+      ]);
+  };
+  const reviewableRecoveryDay = (date: string) => {
+    const reasons = uncertain.get(date),
+      recoverable = recoveryUncertainty.get(date);
+    return !!reasons?.length && reasons.every((r) => recoverable?.includes(r));
+  };
   const prep = essentialPreparation(settings);
   const work = entries.filter((e) => e.status === "Work");
   for (const entry of work) {
@@ -1225,13 +1295,42 @@ export function planTasks(
           "post-duty recovery and full sleep target",
         );
       } else {
-        unclear(
+        // Missing return/recovery lengths do not establish a safe wake time.
+        // Protect at least every known duration and the full sleep target;
+        // only the selected preparation preview may use a later gap, flagged
+        // for review. Ordinary task scheduling keeps the whole day blocked.
+        if (
+          validSleepTarget(settings.sleepTarget) &&
+          [settings.latency, settings.windDown].every(finiteMinutes)
+        ) {
+          try {
+            const recovery = minimumUnconfirmedRecovery(entry, settings);
+            if (recovery)
+              block(
+                recovery.start,
+                recovery.end,
+                "minimum post-duty recovery and full sleep target",
+              );
+          } catch {
+            unclear(
+              recoveryDate,
+              "Review post-duty sleep preferences and daylight-saving choice.",
+            );
+            unclear(
+              addDays(recoveryDate, 1),
+              "Review post-duty sleep preferences and daylight-saving choice.",
+            );
+          }
+        }
+        unclearRecovery(
           recoveryDate,
           "Return travel and post-duty recovery/sleep durations are missing.",
+          entry.timezone === settings.timezone,
         );
-        unclear(
+        unclearRecovery(
           addDays(recoveryDate, 1),
           "The preceding late or overnight duty needs recovery inputs.",
+          entry.timezone === settings.timezone,
         );
       }
     } else if (finiteMinutes(settings.postWorkMinutes))
@@ -1357,11 +1456,12 @@ export function planTasks(
   // that crosses midnight from a preceding date.
   uncertain.forEach((reasons, date) => {
     try {
-      block(
-        onDate(date, "00:00", settings.timezone),
-        onDate(addDays(date, 1), "00:00", settings.timezone),
-        `unconfirmed availability: ${reasons.join(" ")}`,
-      );
+      busy.push({
+        start: onDate(date, "00:00", settings.timezone),
+        end: onDate(addDays(date, 1), "00:00", settings.timezone),
+        label: `unconfirmed availability: ${reasons.join(" ")}`,
+        ...(reviewableRecoveryDay(date) ? { recoveryReviewDate: date } : {}),
+      });
     } catch {
       /* Invalid work dates already have a visible review reason. */
     }
@@ -1794,7 +1894,10 @@ export function planTasks(
             "Rest/leave-day bedtime and wake inputs are still needed for this task; the provisional pre-shift availability applies only to preparation tasks linked to the selected duty.";
           continue;
         }
-        if (uncertain.has(date)) {
+        if (
+          uncertain.has(date) &&
+          !(automaticPreparation && reviewableRecoveryDay(date))
+        ) {
           noSlotReason = `Plan remains provisional: ${uncertain.get(date)!.join(" ")}`;
           continue;
         }
@@ -1815,7 +1918,12 @@ export function planTasks(
         let cursor = Math.max(lower, winStart),
           limit = Math.min(upper, winEnd);
         const occupied = busy
-          .filter((b) => b.end > cursor && b.start < limit)
+          .filter(
+            (b) =>
+              b.end > cursor &&
+              b.start < limit &&
+              !(automaticPreparation && b.recoveryReviewDate === date),
+          )
           .sort((a, b) => a.start - b.start || a.end - b.end);
         const gaps: { start: number; end: number }[] = [];
         for (const b of occupied) {
@@ -1902,6 +2010,25 @@ export function planTasks(
         ...(placement.conflict ? [placement.conflict] : []),
         ...dependency.reasons,
       ]).join(" ");
+  }
+  for (const placement of result) {
+    if (placement.start === null || !latestPreparationDate) continue;
+    const task = active.find((t) => t.id === placement.taskId);
+    if (
+      task?.preparationAutoStart &&
+      task.linkedShiftId === preparationContext?.beforeShiftId &&
+      !fixed.includes(task) &&
+      localAt(placement.start, settings.timezone).slice(0, 10) ===
+        latestPreparationDate &&
+      reviewableRecoveryDay(latestPreparationDate)
+    ) {
+      placement.reason =
+        "Editable suggestion before the bedtime routine, around recorded commitments and the minimum known recovery period.";
+      placement.conflict = unique([
+        ...(placement.conflict ? [placement.conflict] : []),
+        UNCONFIRMED_RECOVERY_WARNING,
+      ]).join(" ");
+    }
   }
   return result;
 }
